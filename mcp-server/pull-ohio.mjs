@@ -49,7 +49,7 @@ const COUNTIES = {
     name: 'Cuyahoga County (Cleveland)',
     population: 1250000,
     endpoint: 'https://gis.cuyahogacounty.us/server/rest/services/CCFO/APPRAISAL_PARCELS_CAMA_WGS84/MapServer/2',
-    maxRecords: 10000,
+    maxRecords: 2000,   // 10000 + all fields => "Error performing query operation"; 2000 works
     fields: '*',
     status: 'ready'
   },
@@ -143,7 +143,8 @@ async function pullCounty(countyId) {
   console.log(`OID field: ${oidField}`);
 
   const outFile = path.join(DATA_DIR, `${countyId}-parcels.jsonl`);
-  const stream = fs.createWriteStream(outFile);
+  const tmpFile = outFile + '.tmp';            // write to temp; swap in only on success
+  const stream = fs.createWriteStream(tmpFile);
   let lastOID = 0;
   let total = 0;
   let retries = 0;
@@ -208,7 +209,15 @@ async function pullCounty(countyId) {
     }
   }
 
-  stream.end();
+  await new Promise(r => stream.end(r));
+  // Only replace the live file if the pull actually returned data — a transient
+  // county-GIS error must NOT clobber good data with an empty file.
+  if (total > 0) {
+    fs.renameSync(tmpFile, outFile);
+  } else {
+    try { fs.unlinkSync(tmpFile); } catch {}
+    console.log(`  WARNING: ${countyId} pulled 0 records (endpoint error?) — keeping previous data, NOT overwriting.`);
+  }
   const sizeMB = fs.existsSync(outFile) ? (fs.statSync(outFile).size / 1024 / 1024).toFixed(1) : '0';
   console.log(`  Done: ${total.toLocaleString()} records (${sizeMB}MB) in ${((Date.now() - startTime) / 1000 / 60).toFixed(1)}min`);
 
@@ -252,8 +261,9 @@ async function buildCityIndex(countyId) {
       };
 
       let city = '';
-      // Tax district description (Summit, Franklin), LOC_AREA (Montgomery), MAILCITY (Hamilton)
-      city = (getField('CVTTXDSCRP') || getField('LOC_AREA') || getField('MAILCITY') || '').trim().toUpperCase().replace(/ CITY$| VILLAGE$| TOWNSHIP$/i, '');
+      // City field varies by county: tax-district (Summit/Franklin), LOC_AREA
+      // (Montgomery), MAILCITY (Hamilton), parcel_city/mail_city (Cuyahoga).
+      city = (getField('CVTTXDSCRP') || getField('LOC_AREA') || getField('MAILCITY') || getField('parcel_city') || getField('mail_city') || '').trim().toUpperCase().replace(/ CITY$| VILLAGE$| TOWNSHIP$/i, '');
       if (!city) city = '_UNKNOWN';
       const safeCity = city.replace(/[^A-Z0-9 ]/g, '').replace(/ +/g, '_');
 
@@ -295,7 +305,9 @@ async function main() {
     const target = args[1];
     if (target === 'all') {
       for (const [id, c] of Object.entries(COUNTIES)) {
-        if (c.status === 'ready') await pullCounty(id);
+        // pull AND rebuild this county's city index — the index is what the
+        // engine reads; pulling without re-indexing leaves search data stale.
+        if (c.status === 'ready') { const n = await pullCounty(id); if (n > 0) await buildCityIndex(id); }
       }
     } else if (COUNTIES[target]) {
       const count = await pullCounty(target);

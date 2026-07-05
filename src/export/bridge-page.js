@@ -78,22 +78,32 @@ async function fetchBCPAPhotos(folio) {
 
 export async function renderBridgePage(data, parcelId) {
   const p = data.property || {};
-  const fs2 = data.farmingScore || {};
+  const inv = data.investorSignals || {};
+  const isNC = (data.origin?.state || p.state) === 'NC';
+  const ncFlags = inv.flags || [];           // NC uses a flags array, not FL booleans
+
+  // Farming score: FL/OH return data.farmingScore; for NC derive a display score
+  // from the signal flags so the page isn't blank.
+  let fs2 = data.farmingScore || {};
+  if (isNC && fs2.score == null) {
+    const n = ncFlags.length;
+    fs2 = { score: Math.min(100, n * 17), rating: n >= 4 ? 'HIGH' : n >= 2 ? 'MEDIUM' : 'LOW', signalCount: n, reasons: ncFlags };
+  }
   const cr = data.courtRecords || {};
   const flood = data.flood || {};
   const demos = data.demographics || {};
   const permits = data.buildingPermits || {};
-  const inv = data.investorSignals || {};
   const lat = p.coordinates?.lat;
   const lng = p.coordinates?.lng;
 
-  const assessedTotal = inv.assessedValue?.total || 0;
-  const assessedLand = inv.assessedValue?.land || 0;
-  const assessedBldg = inv.assessedValue?.building || 0;
+  // NC (Chatham) returns values under property.values (marketTotal/marketLand/marketBuilding).
+  const assessedTotal = inv.assessedValue?.total || p.values?.marketTotal || 0;
+  const assessedLand = inv.assessedValue?.land || p.values?.marketLand || 0;
+  const assessedBldg = inv.assessedValue?.building || p.values?.marketBuilding || 0;
   const displayValue = assessedTotal || (assessedLand + assessedBldg) || data._rawValue || 0;
 
   const dorCode = p.classification?.dorCode || '?';
-  const dorDesc = DOR_CODES[dorCode] || dorCode;
+  const dorDesc = isNC ? (p.classification?.landUse || 'Land') : (DOR_CODES[dorCode] || dorCode);
   const scoreColor = fs2.rating === 'HIGH' ? '#dc2626' : fs2.rating === 'MEDIUM' ? '#f59e0b' : '#22c55e';
   const floodColor = (flood.zone === 'X' || !flood.zone) ? '#16a34a' : '#dc2626';
 
@@ -135,7 +145,9 @@ export async function renderBridgePage(data, parcelId) {
   const folio = p.folio || parcelId || '';
   const bcpaUrl = folio.length >= 10 ? `https://bcpa.net/Photographs.asp?Folio=${folio}` : '';
   const photos = await fetchBCPAPhotos(folio);
-  const photoUrl = photos.length > 0 ? photos[0].url : '';
+  // NC has no county photo; fall back to the parcel-framed aerial (Esri).
+  const photoUrl = photos.length > 0 ? photos[0].url : (p.photo?.aerial || '');
+  const photoSource = photos.length > 0 ? 'BCPA' : (p.photo?.aerial ? 'Aerial' : '');
   const photoDate = photos.length > 0 ? photos[0].date : '';
   const photoCount = photos.length;
 
@@ -143,11 +155,43 @@ export async function renderBridgePage(data, parcelId) {
     `<div style="font-size:13px;padding:2px 0"><strong>${s.date || '?'}</strong> — $${(s.price || 0).toLocaleString()}</div>`
   ).join('');
 
+  // ── SEO / AI-discovery head: canonical, Open Graph, JSON-LD (schema.org) ──
+  // So search engines + AI can index and cite each property page (Jun 20 2026).
+  const _state = isNC ? 'NC' : (p.state || 'FL');
+  const _ownerRaw = p.owner || p.ownerName || (data.owner && data.owner.name1) || '';
+  const _owner = (typeof _ownerRaw === 'object' && _ownerRaw) ? (_ownerRaw.name1 || '') : _ownerRaw;
+  const _esc = s => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const _canon = `https://title.rootz.global/p/?address=${encodeURIComponent(p.address || '')}&city=${encodeURIComponent(p.city || '')}${isNC ? '&state=NC' : ''}`;
+  const _title = `${p.address || parcelId}, ${p.city || ''} ${_state} — Property Records | Rootz`;
+  const _desc = `${p.address || ''}, ${p.city || ''} ${_state}. ${_owner ? 'Owner: ' + _owner + '. ' : ''}Assessed $${(displayValue || 0).toLocaleString()}. Farming score ${fs2.score || 0}/100${flood.zone ? ' · FEMA flood zone ' + flood.zone : ''}. Government-sourced property intelligence with provenance.`;
+  const _jsonld = JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'Residence',
+    name: `${p.address || ''}, ${p.city || ''}`, url: _canon,
+    address: { '@type': 'PostalAddress', streetAddress: p.address || '', addressLocality: p.city || '', addressRegion: _state, postalCode: p.zip || '', addressCountry: 'US' },
+    ...(lat && lng ? { geo: { '@type': 'GeoCoordinates', latitude: lat, longitude: lng } } : {}),
+    additionalProperty: [
+      ...(displayValue ? [{ '@type': 'PropertyValue', name: 'Assessed Value', value: displayValue, unitText: 'USD' }] : []),
+      ...(_owner ? [{ '@type': 'PropertyValue', name: 'Owner', value: _owner }] : []),
+      { '@type': 'PropertyValue', name: 'Farming Score', value: fs2.score || 0, maxValue: 100 },
+      ...(dorDesc && dorDesc !== '?' ? [{ '@type': 'PropertyValue', name: 'Land Use', value: dorDesc }] : []),
+      ...(flood.zone ? [{ '@type': 'PropertyValue', name: 'FEMA Flood Zone', value: flood.zone }] : []),
+    ],
+    isPartOf: { '@type': 'Dataset', name: 'Rootz Property Intelligence', url: 'https://title.rootz.global' },
+  });
+
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${p.address || parcelId} — Rootz Property Intelligence</title>
-<meta name="description" content="Property intelligence: ${p.address}, ${p.city} FL. Farming score ${fs2.score}/100.">
+<title>${_esc(_title)}</title>
+<meta name="description" content="${_esc(_desc)}">
+<link rel="canonical" href="${_esc(_canon)}">
+<meta name="robots" content="index,follow">
+<meta property="og:type" content="website">
+<meta property="og:title" content="${_esc(_title)}">
+<meta property="og:description" content="${_esc(_desc)}">
+<meta property="og:url" content="${_esc(_canon)}">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">${_jsonld}</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f8fafc;color:#1e293b;line-height:1.5}
@@ -180,7 +224,7 @@ ul{padding-left:16px}
 <div class="hdr">
   <h1>Rootz Property Intelligence</h1>
   <div class="addr">${p.address || '?'}</div>
-  <div class="sub">${p.city || '?'}, ${p.state || 'FL'} ${p.zip || ''} &bull; ${dorDesc} &bull; Folio: ${p.folio || parcelId}</div>
+  <div class="sub">${p.city || '?'}, ${p.state || 'FL'} ${p.zip || ''} &bull; ${dorDesc} &bull; ${isNC ? 'Parcel' : 'Folio'}: ${p.folio || p.parcelId || parcelId || '?'}</div>
 </div>
 <div class="sb">
   <div><div class="sn">${fs2.score ?? '?'}</div><div class="sl">Farming Score</div></div>
@@ -192,9 +236,9 @@ ul{padding-left:16px}
 ${photoUrl || osmUrl ? `<div class="cd" style="padding:0;overflow:hidden">
   <div style="display:flex;gap:0">
     ${photoUrl ? `<div style="flex:3;min-width:0;position:relative">
-      <a href="${bcpaUrl}" target="_blank"><img src="${photoUrl}" style="width:100%;height:300px;object-fit:cover" alt="Property Photo"></a>
+      <a href="${bcpaUrl || p.photo?.mapLink || '#'}" target="_blank"><img src="${photoUrl}" style="width:100%;height:300px;object-fit:cover" alt="Property Photo"></a>
       <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.7));padding:8px 12px;color:#fff;font-size:11px;display:flex;justify-content:space-between">
-        <span>Photo: BCPA${photoDate ? ' &bull; ' + photoDate : ''}</span>
+        <span>Photo: ${photoSource}${photoDate ? ' &bull; ' + photoDate : ''}</span>
         <span>${photoCount > 1 ? photoCount + ' photos' : ''}</span>
       </div>
     </div>` : bcpaUrl ? `<div style="flex:3;min-width:0;background:#f1f5f9;display:flex;align-items:center;justify-content:center;height:300px">
@@ -217,9 +261,9 @@ ${photoUrl || osmUrl ? `<div class="cd" style="padding:0;overflow:hidden">
   </div>
   <div class="g2" style="margin-top:10px">
     <div class="gi"><div class="lb">Type</div><div class="vl">${dorDesc}</div></div>
-    <div class="gi"><div class="lb">Year Built</div><div class="vl">${p.building?.yearBuilt || '?'}</div></div>
-    <div class="gi"><div class="lb">Living Area</div><div class="vl">${(p.building?.heatedArea || 0) > 0 ? p.building.heatedArea.toLocaleString() + ' sqft' : '\u2014'}</div></div>
-    <div class="gi"><div class="lb">Lot Size</div><div class="vl">${(p.lot?.size || 0) > 0 ? (p.lot.size >= 43560 ? (p.lot.size / 43560).toFixed(2) + ' acres' : p.lot.size.toLocaleString() + ' sqft') : '\u2014'}</div></div>
+    <div class="gi"><div class="lb">Year Built</div><div class="vl">${p.building?.yearBuilt || (isNC ? '—' : '?')}</div></div>
+    <div class="gi"><div class="lb">Living Area</div><div class="vl">${(p.building?.heatedArea || p.building?.sqft || 0) > 0 ? (p.building.heatedArea || p.building.sqft).toLocaleString() + ' sqft' : '\u2014'}</div></div>
+    <div class="gi"><div class="lb">Lot Size</div><div class="vl">${p.lot?.acres > 0 ? p.lot.acres.toFixed(2) + ' acres' : (p.lot?.size || 0) > 0 ? (p.lot.size >= 43560 ? (p.lot.size / 43560).toFixed(2) + ' acres' : p.lot.size.toLocaleString() + ' sqft') : '\u2014'}</div></div>
   </div>
   ${salesHTML ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0"><div class="lb" style="margin-bottom:4px">Sales History</div>${salesHTML}</div>` : ''}
 </div>
@@ -231,16 +275,26 @@ ${photoUrl || osmUrl ? `<div class="cd" style="padding:0;overflow:hidden">
   <h2>Owner</h2>
   <div class="g2">
     <div class="gi"><div class="lb">Owner</div><div class="vl">${p.owner?.name1 || '?'}</div></div>
-    <div class="gi"><div class="lb">Owner Occupied</div><div class="vl">${inv.ownerOccupied ? 'Yes' : 'No — Absentee'}</div></div>
-    <div class="gi"><div class="lb">Out of State</div><div class="vl">${inv.outOfStateOwner ? 'Yes' : 'No'}</div></div>
-    <div class="gi"><div class="lb">Corporate/LLC</div><div class="vl">${inv.corporateOwner ? 'Yes' : 'No'}</div></div>
-    <div class="gi"><div class="lb">Homestead</div><div class="vl">${inv.homesteadExemption ? 'Yes' : 'No'}</div></div>
+    <div class="gi"><div class="lb">Owner Occupied</div><div class="vl">${isNC ? (ncFlags.some(f => /absentee/i.test(f)) ? 'No — Absentee' : 'Likely') : (inv.ownerOccupied ? 'Yes' : 'No — Absentee')}</div></div>
+    <div class="gi"><div class="lb">Out of State</div><div class="vl">${isNC ? (ncFlags.some(f => /out-of-state/i.test(f)) ? 'Yes' : 'No') : (inv.outOfStateOwner ? 'Yes' : 'No')}</div></div>
+    <div class="gi"><div class="lb">${isNC ? 'Trust / Estate' : 'Corporate/LLC'}</div><div class="vl">${isNC ? (ncFlags.some(f => /trust|estate|heirs/i.test(f)) ? 'Yes' : (ncFlags.some(f => /corporate|llc/i.test(f)) ? 'LLC' : 'No')) : (inv.corporateOwner ? 'Yes' : 'No')}</div></div>
+    <div class="gi"><div class="lb">${isNC ? 'Vacant Land' : 'Homestead'}</div><div class="vl">${isNC ? (ncFlags.some(f => /vacant/i.test(f)) ? 'Yes' : 'No') : (inv.homesteadExemption ? 'Yes' : 'No')}</div></div>
   </div>
 </div>
-<div class="cd">
+${isNC
+  ? (p.mortgage ? `<div class="cd">
+  <h2>Recorded Mortgage — Register of Deeds</h2>
+  <div class="g3">
+    <div class="gi"><div class="lb">Loan Amount</div><div class="bv">$${(p.mortgage.loanAmount || 0).toLocaleString()}</div></div>
+    <div class="gi"><div class="lb">Lender</div><div class="vl">${p.mortgage.lender || '?'}${p.mortgage.isLineOfCredit ? ' (HELOC)' : ''}</div></div>
+    <div class="gi"><div class="lb">Est. Equity</div><div class="vl">${p.mortgage.equityEstimate != null ? '$' + p.mortgage.equityEstimate.toLocaleString() : '—'}</div></div>
+  </div>
+  <div class="pv" style="margin-top:8px">Read from the recorded deed of trust${p.mortgage.recordedDate ? ' (' + p.mortgage.recordedDate + ')' : ''}. Equity is an estimate (value minus recorded loan).</div>
+</div>` : '')
+  : `<div class="cd">
   <h2>Court Records — Broward County Clerk</h2>
   ${courtHTML}
-</div>
+</div>`}
 <div class="cd">
   <h2>Neighborhood</h2>
   <div class="g2">
@@ -250,7 +304,7 @@ ${photoUrl || osmUrl ? `<div class="cd" style="padding:0;overflow:hidden">
     </div>
     <div class="gi">
       <div class="lb">Demographics</div>
-      ${demos.medianHouseholdIncome ? `<div class="vl">$${demos.medianHouseholdIncome.toLocaleString()} median income</div>` : '<div class="vl" style="color:#94a3b8">Loading...</div>'}
+      ${demos.medianHouseholdIncome ? `<div class="vl">$${demos.medianHouseholdIncome.toLocaleString()} median income</div>` : `<div class="vl" style="color:#94a3b8">${isNC ? '—' : 'Loading...'}</div>`}
     </div>
   </div>
   ${schoolList ? `<div style="margin-top:10px"><div class="lb">Nearby Schools</div><ul style="font-size:12px;margin-top:4px">${schoolList}</ul></div>` : ''}
@@ -258,7 +312,7 @@ ${photoUrl || osmUrl ? `<div class="cd" style="padding:0;overflow:hidden">
 </div>
 <div class="pv">
   <strong>Data Provenance</strong><br>
-  Hash: <code>${data.origin?.documentHash?.slice(0, 16) || '?'}...</code> | ${(data.origin?.sources || []).length} sources | Confidence: ${((data.origin?.confidence || 0) * 100).toFixed(0)}%
+  Hash: <code>${data.origin?.documentHash?.slice(0, 16) || '?'}...</code> | ${(data.origin?.sources || []).length} source${(data.origin?.sources || []).length === 1 ? '' : 's'} | Confidence: ${((data.origin?.confidence || 0) * 100).toFixed(0)}%
 </div>
 <div class="ft">
   <strong>Rootz Property Intelligence</strong> — Government data with cryptographic proof<br>

@@ -16,7 +16,22 @@
 import fs from 'fs';
 import path from 'path';
 import { CITIES_DIR } from '../lib/config.js';
+import { getParcelDb } from '../lib/parcel-db.js';
 import { getClerkDb, _clerkStmts } from './fl-clerk.js';
+
+// Map a parcels.db row to the raw DOR field names the farm loop reads, so the
+// existing scoring/formatting runs unchanged on index-sourced candidates.
+const flFarmRow = row => ({
+  DOR_UC: row.land_use, PHY_ADDR1: row.situs_addr, PHY_CITY: row.city, PHY_ZIPCD: row.situs_zip,
+  OWN_NAME: row.owner1, OWN_ADDR1: row.mail_addr, OWN_CITY: row.mail_city,
+  OWN_STATE: row.mail_state, OWN_ZIPCD: row.mail_zip,
+  JV: row.total_val, AV_HMSTD: row.av_hmstd,
+  SALE_PRC1: row.sale1_price, SALE_YR1: row.sale1_year, SALE_MO1: row.sale1_mo,
+  SALE_PRC2: row.sale2_price, SALE_YR2: row.sale2_year, SALE_MO2: row.sale2_mo,
+  EFF_YR_BLT: row.year_built, ACT_YR_BLT: row.year_built,
+  TOT_LVG_AR: row.living_area, LND_SQFOOT: row.lot_sqft,
+  NO_BULDNG: row.bldg_count, NO_RES_UNT: row.unit_count,
+});
 
 export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [], limit = 50, minScore = 0 }) {
   // ZIP code search — find matching city file(s) and filter by ZIP
@@ -44,17 +59,47 @@ export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [],
   const RESIDENTIAL = new Set(['000', '001', '002', '003', '004', '005', '006', '007', '008', '009']);
   const EXCLUDE = ['DEPT OF TRANSPORTATION', 'SCHOOL BOARD', 'HOUSING AUTHORITY', 'HOMEOWNERS ASSN', 'CONDOMINIUM ASSN', 'MASTER ASSN', 'STATE OF FLORIDA', 'UNITED STATES', 'CITY OF', 'COUNTY OF', 'WATER MANAGEMENT'];
 
-  const lines = fs.readFileSync(cityFile, 'utf-8').split('\n');
   const db = getClerkDb();
   const prospects = [];
   const signalSet = new Set(signals.map(s => s.toLowerCase().trim()));
   const filterBySignal = signalSet.size > 0;
 
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    let p;
-    try { p = JSON.parse(line); } catch { continue; }
+  // Source candidate records from the SQLite index when available (pre-filtered on
+  // parcel signals in SQL, ordered by base score — far fewer rows than a full file
+  // scan). Clerk signals (probate/lis_pendens/…) aren't in the parcel index, so
+  // those queries fall back to the full city-file scan to stay correct. (Jun 20 2026)
+  const CLERK_SIGNALS = new Set(['lis_pendens', 'probate', 'lien', 'judgment', 'death', 'mortgage', 'free_clear']);
+  const wantsClerkSignal = [...signalSet].some(s => CLERK_SIGNALS.has(s));
+  const pdb = getParcelDb('florida');
+  let records;
+  if (pdb && !wantsClerkSignal) {
+    // Pre-filter on the OR of the requested parcel signals (the loop's matching is
+    // OR, not AND). This is a SUPERSET of what the loop will keep — every column the
+    // loop can match on is covered — so the loop below produces results identical to
+    // the legacy full-file scan, just over far fewer rows. Hyphen + underscore names
+    // both map to the column.
+    const SIG_COL = {
+      absentee: 'absentee = 1',
+      out_of_state: 'out_of_state = 1', 'out-of-state': 'out_of_state = 1',
+      corporate: 'corporate = 1',
+      no_homestead: 'av_hmstd = 0', 'no-homestead': 'av_hmstd = 0',
+      vacant: 'vacant = 1',
+    };
+    let where = 'city = ? AND residential = 1';
+    const qp = [cityUp.replace(/_/g, ' ')];
+    const ors = [...signalSet].map(s => SIG_COL[s]).filter(Boolean);
+    if (ors.length) where += ' AND (' + ors.join(' OR ') + ')';
+    if (filterZip) { where += ' AND situs_zip LIKE ?'; qp.push(filterZip + '%'); }
+    const rows = pdb.prepare(`SELECT * FROM parcels WHERE ${where} ORDER BY base_score DESC LIMIT 8000`).all(...qp);
+    records = rows.map(flFarmRow);
+  } else {
+    records = fs.readFileSync(cityFile, 'utf-8').split('\n')
+      .filter(l => l.trim())
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  }
 
+  for (const p of records) {
     const dor = String(p.DOR_UC || '').trim();
     if (!RESIDENTIAL.has(dor)) continue;
 

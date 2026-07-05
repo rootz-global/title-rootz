@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio, getFloodZone, getCensusData, findBuildingPermits, findNearestSchools, findNearestHospitals, findNearestEVCharging, findNearestTRIFacilities, getMarketEconomics, getInvestorSignals, getIRSIncomeByZip, getNFIPClaimsByZip, getFEMADisastersByCounty, getStatewideEconomics, assembleTimeshareIntelligence, searchDBPRTimeshare } from './fl-query.mjs';
+import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio, getFloodZone, getCensusData, findBuildingPermits, findNearestSchools, findNearestHospitals, findNearestEVCharging, findNearestTRIFacilities, getMarketEconomics, getInvestorSignals, getIRSIncomeByZip, getNFIPClaimsByZip, getFEMADisastersByCounty, getStatewideEconomics, assembleTimeshareIntelligence, searchDBPRTimeshare, searchVacationRentals } from './fl-query.mjs';
 import { assembleOhioPropertyIntelligence, lookupOhioByAddress } from './oh-query.mjs';
 import { parseCookies, requireAuth, createAccount, getAccountByEmail, createMagicLinkToken, verifyMagicLinkToken, createSession, checkRateLimit, checkTokenBudget, logUsage, updateUsageTokens, getUsageStats, getTierConfig, revokeSession } from './auth.mjs';
 import { sendMagicLink } from './email.mjs';
@@ -2570,6 +2570,33 @@ function copyLink() {
 
     if (path === '/api/fl/economics') {
       const result = getMarketEconomics();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(result, null, 2));
+    }
+
+    // ─── VACATION RENTAL LOOKUP (DBPR) ─────────────────────────
+    if (path === '/api/fl/vacation-rentals') {
+      const address = urlParts.searchParams.get('address') || '';
+      const owner = urlParts.searchParams.get('owner') || '';
+      const city = urlParts.searchParams.get('city') || '';
+      const county = urlParts.searchParams.get('county') || '';
+      const limit = parseInt(urlParts.searchParams.get('limit')) || 50;
+
+      if (!address && !owner && !city && !county) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          error: 'Provide address, owner, city, or county',
+          examples: [
+            '/api/fl/vacation-rentals?city=KISSIMMEE&limit=20',
+            '/api/fl/vacation-rentals?owner=SMITH',
+            '/api/fl/vacation-rentals?county=OSCEOLA&limit=100',
+            '/api/fl/vacation-rentals?address=1234+MAIN+ST'
+          ],
+          note: '178K licensed vacation rentals statewide with phone numbers (FL DBPR)'
+        }));
+      }
+
+      const result = searchVacationRentals({ address, owner, city, county, limit });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(result, null, 2));
     }

@@ -1025,10 +1025,54 @@ function getPermitIndices() {
     }
   }
 
-  const totalPermits = countyPermits.length + cityPermits.length + ftlPermits.length + pbPermits.length + hcPermits.length;
+  // Load CHARLOTTE COUNTY new construction permits
+  const charlottePermits = loadPermitFile('permits/charlotte-new-construction.json') || [];
+  for (const p of charlottePermits) {
+    p._source = 'charlotte';
+    const addr = normalizeAddress(p.PermitAddress || '');
+    if (addr && addr.length > 5) {
+      if (!_permitAddrIndex[addr]) _permitAddrIndex[addr] = [];
+      _permitAddrIndex[addr].push(p);
+    }
+    const parcel = String(p.ParcelNumber || '').trim();
+    if (parcel) {
+      if (!_permitFolioIndex[parcel]) _permitFolioIndex[parcel] = [];
+      _permitFolioIndex[parcel].push(p);
+    }
+  }
+
+  // Load LEON/TALLAHASSEE active permits
+  const leonPermits = loadPermitFile('permits/leon-tallahassee-active.json') || [];
+  for (const p of leonPermits) {
+    p._source = 'leon';
+    const addr = normalizeAddress(p.OriginalAddress1 || '');
+    if (addr && addr.length > 5) {
+      if (!_permitAddrIndex[addr]) _permitAddrIndex[addr] = [];
+      _permitAddrIndex[addr].push(p);
+    }
+    const pin = String(p.PIN || '').trim();
+    if (pin) {
+      if (!_permitFolioIndex[pin]) _permitFolioIndex[pin] = [];
+      _permitFolioIndex[pin].push(p);
+    }
+  }
+
+  const totalPermits = countyPermits.length + cityPermits.length + ftlPermits.length + pbPermits.length + hcPermits.length + charlottePermits.length + leonPermits.length;
   console.log(`Permit index built: ${Object.keys(_permitAddrIndex).length} addresses, ${Object.keys(_permitFolioIndex).length} folios`);
-  console.log(`  Sources: MDC ${countyPermits.length}, Miami City ${cityPermits.length}, Ft Lauderdale ${ftlPermits.length}, Palm Bay ${pbPermits.length}, Hillsborough ${hcPermits.length} = ${totalPermits} total`);
+  console.log(`  Sources: MDC ${countyPermits.length}, Miami City ${cityPermits.length}, Ft Lauderdale ${ftlPermits.length}, Palm Bay ${pbPermits.length}, Hillsborough ${hcPermits.length}, Charlotte ${charlottePermits.length}, Leon ${leonPermits.length} = ${totalPermits} total`);
   return { addr: _permitAddrIndex, folio: _permitFolioIndex };
+}
+
+// Load permit file from permits/ subdirectory
+function loadPermitFile(filename) {
+  const filePath = path.join(__dirname, 'data', 'florida', filename);
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch (e) {
+    console.error(`Failed to load ${filename}: ${e.message}`);
+    return null;
+  }
 }
 
 // Find building permits for a property by folio or address
@@ -1097,6 +1141,41 @@ export function findBuildingPermits(folio, address) {
         issueDate: p.Date || p.date || null,
         coordinates: null,
         source: 'Hillsborough County (Accela)'
+      };
+    }
+
+    if (src === 'charlotte') {
+      return {
+        processNumber: p.PermitNumber || p.CAP || '',
+        address: (p.PermitAddress || p.Address || '').trim(),
+        folio: p.ParcelNumber || '',
+        type: p.PermitTypeDesc || p.Type || '',
+        description: p.B1_PER_CATEGORY || p.Category || '',
+        status: p.CurrentPermitStatus || p.Status_1 || '',
+        estimatedValue: parseInt(p.Value) || null,
+        contractor: (p.ContractorBusinessName || p.Inspector || '').trim(),
+        issueDate: p.IssueDate ? new Date(parseInt(p.IssueDate)).toISOString().split('T')[0] : null,
+        coordinates: null,
+        source: 'Charlotte County Building Permits'
+      };
+    }
+
+    if (src === 'leon') {
+      return {
+        processNumber: p.PermitNum || '',
+        address: (p.OriginalAddress1 || '').trim(),
+        folio: p.PIN || '',
+        type: p.PermitTypeMapped || p.PermitType || '',
+        description: p.Description || '',
+        status: p.StatusCurrent || '',
+        estimatedValue: parseInt(p.EstProjectCost) || null,
+        contractor: (p.ContractorCompanyName || '').trim(),
+        contractorPhone: p.ContractorPhone || '',
+        contractorEmail: p.ContractorEmail || '',
+        issueDate: p.IssuedDate ? new Date(parseInt(p.IssuedDate)).toISOString().split('T')[0] : null,
+        sqft: parseInt(p.TotalSqFt) || null,
+        units: parseInt(p.HousingUnits) || null,
+        source: 'Leon County / Tallahassee Building Permits'
       };
     }
 
@@ -1866,6 +1945,105 @@ export async function assembleTimeshareIntelligence(query, city, explicitAddress
       permitActivity: permits.length > 0 ? `${permits.length} permits on record` : 'No permits found',
       isRegistered: dbprMatches.length > 0 && dbprMatches[0].status === 'Approved'
     }
+  };
+}
+
+// ─── DBPR Vacation Rental Lookup ──────────────────────────────────
+// 178K licensed vacation rentals statewide with phone numbers
+let _vrIndex = null;
+function getVRIndex() {
+  if (_vrIndex) return _vrIndex;
+  const filePath = path.join(__dirname, 'data', 'dbpr-licenses', 'vacation-rentals-statewide.jsonl');
+  if (!fs.existsSync(filePath)) return null;
+
+  _vrIndex = { byAddress: {}, byOwner: {}, byCounty: {}, byCity: {}, total: 0 };
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(l => l.trim());
+
+  for (const line of lines) {
+    try {
+      const r = JSON.parse(line);
+      _vrIndex.total++;
+
+      // Index by location address (normalized)
+      const addr = (r['Location Street Address'] || '').trim().toUpperCase();
+      if (addr.length > 5) {
+        const normAddr = addr.replace(/\./g, '').replace(/\s+/g, ' ');
+        if (!_vrIndex.byAddress[normAddr]) _vrIndex.byAddress[normAddr] = [];
+        _vrIndex.byAddress[normAddr].push(r);
+      }
+
+      // Index by owner name
+      const owner = (r['Licensee Name'] || '').trim().toUpperCase();
+      if (owner.length > 2) {
+        if (!_vrIndex.byOwner[owner]) _vrIndex.byOwner[owner] = [];
+        _vrIndex.byOwner[owner].push(r);
+      }
+
+      // Index by county
+      const county = (r['Location County'] || '').trim().toUpperCase();
+      if (county) {
+        if (!_vrIndex.byCounty[county]) _vrIndex.byCounty[county] = [];
+        _vrIndex.byCounty[county].push(r);
+      }
+
+      // Index by city
+      const city = (r['Location City'] || '').trim().toUpperCase();
+      if (city) {
+        if (!_vrIndex.byCity[city]) _vrIndex.byCity[city] = [];
+        _vrIndex.byCity[city].push(r);
+      }
+    } catch {}
+  }
+
+  console.log(`DBPR VR index built: ${_vrIndex.total.toLocaleString()} rentals, ${Object.keys(_vrIndex.byCity).length} cities, ${Object.keys(_vrIndex.byCounty).length} counties`);
+  return _vrIndex;
+}
+
+export function searchVacationRentals({ address, owner, city, county, limit = 50 }) {
+  const idx = getVRIndex();
+  if (!idx) return { results: [], total: 0, note: 'DBPR vacation rental data not loaded' };
+
+  let matches = [];
+
+  if (address) {
+    const normAddr = address.trim().toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+    matches = idx.byAddress[normAddr] || [];
+  } else if (owner) {
+    const normOwner = owner.trim().toUpperCase();
+    // Exact match first, then startsWith
+    matches = idx.byOwner[normOwner] || [];
+    if (!matches.length) {
+      for (const [key, val] of Object.entries(idx.byOwner)) {
+        if (key.startsWith(normOwner)) { matches.push(...val); if (matches.length >= limit) break; }
+      }
+    }
+  } else if (city) {
+    matches = idx.byCity[city.trim().toUpperCase()] || [];
+  } else if (county) {
+    matches = idx.byCounty[county.trim().toUpperCase()] || [];
+  }
+
+  return {
+    results: matches.slice(0, limit).map(r => ({
+      licensee: r['Licensee Name'],
+      businessName: r['Business Name'],
+      address: r['Location Street Address'],
+      city: r['Location City'],
+      county: r['Location County'],
+      zip: r['Location Zip Code'],
+      phone: r['Primary Phone Number'] || r['Secondary Phone Number'] || null,
+      phone2: r['Secondary Phone Number'] || null,
+      licenseNumber: r['License Number'],
+      licenseType: r['License Type Code'] === '2006' ? 'Vacation Rental Condo' : 'Vacation Rental Dwelling',
+      status: r['Primary Status Code'],
+      expiryDate: r['License Expiry Date'],
+      units: parseInt(r['Number of Seats or Rental Units']) || null,
+      mailingAddress: [r['Mailing Street Address'], r['Mailing City'], r['Mailing State Code'], r['Mailing Zip Code']].filter(Boolean).join(', ')
+    })),
+    total: matches.length,
+    source: 'FL DBPR Division of Hotels & Restaurants',
+    coverage: 'Statewide (all 67 FL counties)',
+    totalInDatabase: idx.total
   };
 }
 

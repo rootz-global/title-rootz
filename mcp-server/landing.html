@@ -1,7 +1,18 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <title>Origin Title Records - AI-Readable Property Intelligence</title>
+  <meta charset="utf-8">
+  <title>Rootz Property Intelligence — AI-Native Property Records (FL, OH, NC)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AI-native property intelligence: 10.8M Florida, 5.7M North Carolina, and 1.2M Ohio parcels from government sources. Owner, assessed value, farming signals, courthouse records, FEMA flood zones — queryable by any AI or API, no key required.">
+  <link rel="canonical" href="https://title.rootz.global/">
+  <meta name="robots" content="index,follow">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Rootz Property Intelligence — AI-Native Property Records">
+  <meta property="og:description" content="10.8M FL + 5.7M NC + 1.2M OH parcels from government sources. Owner, value, farming signals, courthouse records, flood zones. Queryable by any AI or API.">
+  <meta property="og:url" content="https://title.rootz.global/">
+  <meta name="twitter:card" content="summary">
+  <script type="application/ld+json">[{"@context":"https://schema.org","@type":"WebSite","name":"Rootz Property Intelligence","url":"https://title.rootz.global","potentialAction":{"@type":"SearchAction","target":"https://title.rootz.global/p/?address={search_term_string}","query-input":"required name=search_term_string"}},{"@context":"https://schema.org","@type":"Dataset","name":"Rootz Property Intelligence","description":"AI-native property records for 10.8M Florida, 5.7M North Carolina, and 1.2M Ohio parcels assembled from government sources: owner, assessed value, farming/motivated-seller signals, courthouse records (foreclosure, probate, liens), FEMA flood zones, building permits, and census demographics.","url":"https://title.rootz.global","creator":{"@type":"Organization","name":"Rootz Corp","url":"https://rootz.global"},"spatialCoverage":["Florida","Ohio","North Carolina"],"isAccessibleForFree":true,"distribution":{"@type":"DataDownload","encodingFormat":"application/json","contentUrl":"https://title.rootz.global/api"},"license":"https://title.rootz.global/.well-known/ai"}]</script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1a1a1a; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 20px; }
@@ -32,18 +43,18 @@
 <body>
 
 <div class="hero">
-  <h1>Origin Title Records</h1>
-  <p class="tagline">AI-readable, verified property intelligence for Massachusetts and Florida</p>
+  <h1>Rootz Property Intelligence</h1>
+  <p class="tagline">AI-native, government-sourced property intelligence for Florida, Ohio, and North Carolina</p>
   <p style="margin-top: 15px;">
-    <span class="stat">10 MA Properties</span>
-    <span class="stat">967K FL Parcels</span>
-    <span class="stat">9 MCP Tools</span>
-    <span class="stat">Live MassGIS API</span>
+    <span class="stat">10.8M FL Parcels</span>
+    <span class="stat">5.7M NC Parcels</span>
+    <span class="stat">1.2M OH Parcels</span>
+    <span class="stat">12 MCP Tools</span>
   </p>
 </div>
 
 <h2>What Is This?</h2>
-<p>Origin Title Records assembles verified property data from multiple public sources &mdash; registries of deeds, county assessors, state GIS, FEMA flood maps &mdash; cross-references them, scores confidence, and makes everything queryable by AI agents or humans through simple API calls.</p>
+<p>Rootz Property Intelligence assembles verified property data from multiple public sources &mdash; registries of deeds, county assessors, state GIS, FEMA flood maps &mdash; cross-references them, scores confidence, and makes everything queryable by AI agents or humans through simple API calls.</p>
 <p><strong>The problem:</strong> An AI asked about a property today gets "I'd recommend checking Zillow." That's not an answer &mdash; it's a homework assignment.</p>
 <p><strong>The solution:</strong> Ask Origin, get the complete verified record &mdash; chain of title, liens, assessed values, building details, fraud analysis &mdash; in one call.</p>
 
@@ -88,39 +99,15 @@
 
 <p style="background: #fff3cd; padding: 12px; border-radius: 6px; margin: 15px 0;"><strong>Coverage:</strong> 967,000+ Miami-Dade County properties available for instant lookup. FEMA flood data works nationwide. Census demographics cover all US addresses. Data sourced from authenticated government servers with SSL provenance.</p>
 
-<h2>Massachusetts &mdash; Deep Title Records</h2>
-<p>10 properties with full registry-of-deeds extraction (deed chains, mortgages, liens, fraud analysis). Plus live MassGIS assessor for any of 2.6M MA properties.</p>
+<h2>Massachusetts &mdash; Live Assessor + Recorded Title History</h2>
+<p>Two layers: <strong>(1)</strong> live <strong>MassGIS assessor</strong> for <strong>any</strong> of ~2.4M Massachusetts parcels (owner, assessed value, lot, year built, last sale) plus FEMA flood zone; and <strong>(2)</strong> the <strong>recorded title history</strong> &mdash; deed chain, mortgages, homestead, and a clean/encumbered <strong>title analysis</strong> &mdash; for parcels pulled from the Registry of Deeds.</p>
 
-<h3>Property Search &amp; Assessor Data</h3>
-<a class="demo-link" href="/api/search?address=111+Swamp+Rd&town=Richmond">
-  <div class="dtitle">Search: 111 Swamp Rd, Richmond MA</div>
-  <div class="url">/api/search?address=111+Swamp+Rd&amp;town=Richmond</div>
-  <div class="desc">Full property record &mdash; 14 registry documents, 5 parcels totaling $2.57M assessed, deed chain from 1997. Includes live MassGIS assessor data.</div>
+<a class="demo-link" href="/api/ma/search?address=105+Lake+Shore+Dr&city=Georgetown">
+  <div class="dtitle">Massachusetts property: 105 Lake Shore Dr, Georgetown</div>
+  <div class="url">/api/ma/search?address=105+Lake+Shore+Dr&amp;city=Georgetown</div>
+  <div class="desc">Live MassGIS assessor (FY2026 assessed $619,600, Colonial built 1994, last sale $599,000 in 2022) + FEMA flood zone, joined to the recorded deed chain from the Southern Essex Registry &mdash; the purchase deed, a $588,150 purchase-money mortgage (~98% LTV), a homestead declaration, and a 2026 notice &mdash; with an automated <strong>CLEAN</strong> title analysis.</div>
 </a>
-<a class="demo-link" href="/api/assessor?address=147+Reservoir+Rd&town=Lenox">
-  <div class="dtitle">Live Assessor: 147 Reservoir Rd, Lenox MA</div>
-  <div class="url">/api/assessor?address=147+Reservoir+Rd&amp;town=Lenox</div>
-  <div class="desc">Real-time query to Massachusetts state GIS &mdash; owner (Palmer Jonathan), $1.48M assessed, 4,101 sqft contemporary, sold $937,500 in 2012. Works for ANY of 2.6 million MA properties.</div>
-</a>
-
-<h3>Title Analysis</h3>
-<a class="demo-link" href="/api/chain?address=15+Shetland+Dr&town=Pittsfield">
-  <div class="dtitle">Chain of Title: 15 Shetland Dr, Pittsfield MA</div>
-  <div class="url">/api/chain?address=15+Shetland+Dr&amp;town=Pittsfield</div>
-  <div class="desc">Ownership history &mdash; Kester sold to Connolly ($173K, 1998), Connolly married Turner and added husband to deed ($0, 1999). The AI explains the name change.</div>
-</a>
-<a class="demo-link" href="/api/liens?address=291+North+Plain+Rd&town=Great+Barrington">
-  <div class="dtitle">Lien Check: 291 North Plain Rd, Great Barrington MA</div>
-  <div class="url">/api/liens?address=291+North+Plain+Rd&amp;town=Great+Barrington</div>
-  <div class="desc">The troubled title &mdash; 3 tax takings (all redeemed), 4 execution judgments (funeral home $8,674, oil company $4,214, garage $633), mortgage discharged. Active vs. resolved with cross-references.</div>
-</a>
-
-<h3>Fraud Detection</h3>
-<a class="demo-link" href="/api/fraud?address=291+North+Plain+Rd&town=Great+Barrington">
-  <div class="dtitle">Fraud Analysis: 291 North Plain Rd (Risk: MEDIUM)</div>
-  <div class="url">/api/fraud?address=291+North+Plain+Rd&amp;town=Great+Barrington</div>
-  <div class="desc">Automated pattern detection &mdash; flags orphan deeds, repeated tax takings, $13,520 in execution judgments, financial distress indicators. A title examiner would spend 4 hours finding this. Origin finds it instantly.</div>
-</a>
+<p style="color:#666;font-size:0.9em;">Assessor + flood work for <strong>any</strong> MA address &mdash; pass the town as <code>city=</code>. The deed-chain / title-analysis layer is a per-property Registry-of-Deeds pull; ask and we&rsquo;ll run it for a specific parcel.</p>
 <a class="demo-link" href="/api/party?name=SPRAGUE">
   <div class="dtitle">Cross-Party Search: "SPRAGUE"</div>
   <div class="url">/api/party?name=SPRAGUE</div>
@@ -187,11 +174,21 @@
   <tr><td><code>list_properties</code></td><td>All properties in the Origin cache</td></tr>
 </table>
 
+<h2>Other Rootz AI-Native Data Services</h2>
+<p>Title is one of several government-data services Rootz makes AI-native. Each is queryable by any AI or API:</p>
+<p>
+  <a href="https://origin.rootz.global">Origin — SEC companies &amp; filings</a> &nbsp;·&nbsp;
+  <a href="https://politics.rootz.global">Politics — officials, votes &amp; speeches</a> &nbsp;·&nbsp;
+  <a href="https://cars.rootz.global">Cars — vehicle listings &amp; dealers</a> &nbsp;·&nbsp;
+  <a href="https://freight.rootz.global">Freight — carrier &amp; FMCSA data</a> &nbsp;·&nbsp;
+  <a href="https://food.rootz.global">Food — grocery &amp; nutrition data</a>
+</p>
+
 <div class="footer">
-  <p><strong>Origin Title Records v0.1</strong> &mdash; Built by <a href="https://rootz.global">Rootz Corp</a></p>
+  <p><strong>Rootz Property Intelligence v2.0</strong> &mdash; Built by <a href="https://rootz.global">Rootz Corp</a></p>
   <p>DBA: <code>eth:0xD36AAf65a91bB7dc69942cF6B6d1dBa4Ef171664</code></p>
   <p>Contact: steven@rootz.global</p>
-  <p>Data: Massachusetts Registry of Deeds, MassGIS, Miami-Dade County GIS, FEMA, US Census Bureau</p>
+  <p>Data sources: Florida Department of Revenue, Ohio County Auditors, North Carolina OneMap, county Registers of Deeds &amp; Clerks of Court, FEMA, US Census Bureau</p>
 </div>
 
 </body>

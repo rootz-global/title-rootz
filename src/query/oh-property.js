@@ -6,9 +6,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { DATA_DIR as ROOT_DATA } from '../lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, 'data', 'ohio');
+// Use the shared project data dir (symlinked on the server), NOT __dirname/data
+// (which resolves to src/query/data and does not exist on the server).
+const DATA_DIR = path.join(ROOT_DATA, 'ohio');
 const CITIES_DIR = path.join(DATA_DIR, 'cities');
 
 // ─── Fetch Helper ─────────────────────────────────────────────

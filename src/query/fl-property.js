@@ -24,6 +24,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { execSync } from 'child_process';
 import { fetchJSON } from '../lib/fetch.js';
+import { getParcelDb, normAddr } from '../lib/parcel-db.js';
 import { DATA_DIR, CITIES_DIR } from '../lib/config.js';
 import { MDC_PROPERTY_LAYER, CENSUS_GEOCODER, SSL_CERTS } from '../lib/constants.js';
 import { lookupClerkSignals } from './fl-clerk.js';
@@ -68,7 +69,51 @@ export async function lookupByFolio(folio) {
 
 // ─── Statewide Address Search (grep JSONL) ───���───────────────────
 
+// Map a parcels.db row back to the exact object shape the grep path produced,
+// so everything downstream (assemble, signals, bridge page) is unchanged.
+function flRowToRecord(row) {
+  return {
+    TRUE_SITE_ADDR: row.situs_addr || '', TRUE_SITE_CITY: row.city || '',
+    TRUE_SITE_ZIP_CODE: row.situs_zip || '',
+    TRUE_OWNER1: row.owner1 || '', TRUE_OWNER2: row.owner2 || '',
+    TRUE_MAILING_ADDR1: row.mail_addr || '', TRUE_MAILING_CITY: row.mail_city || '',
+    TRUE_MAILING_STATE: row.mail_state || '',
+    TRUE_MAILING_ZIP_CODE: row.mail_zip || '',
+    FOLIO: row.parcel_id || '',
+    DOR_CODE_CUR: row.land_use || '', YEAR_BUILT: row.year_built || 0,
+    BUILDING_HEATED_AREA: row.living_area || 0, BUILDING_COUNT: row.bldg_count || 0,
+    UNIT_COUNT: row.unit_count || 0, LOT_SIZE: row.lot_sqft || 0,
+    BUILDING_VAL_CUR: row.total_val ? row.total_val - (row.land_val || 0) : null,
+    LAND_VAL_CUR: row.land_val || null, TOTAL_VAL_CUR: row.total_val || null,
+    CO_NO: row.co_no || null,
+    _statewide: true,
+    _sale1: { price: row.sale1_price, year: row.sale1_year, month: row.sale1_mo, book: row.sale1_book, page: row.sale1_page },
+    _sale2: { price: row.sale2_price, year: row.sale2_year, month: row.sale2_mo, book: row.sale2_book, page: row.sale2_page },
+    _homestead: row.jv_hmstd > 0,
+  };
+}
+
+// SQLite index lookup (preferred). Returns array of records, or null if the index
+// isn't available so the caller falls back to the legacy grep.
+function searchSqliteByAddress(address, city) {
+  const db = getParcelDb('florida');
+  if (!db) return null;
+  const addrUp = normAddr(address);
+  const cityUp = city ? city.toUpperCase().trim() : '';
+  const parts = addrUp.match(/^(\d+)\s+(.+)$/);
+  const pattern = (parts ? `${parts[1]} ${normAddr(parts[2])}` : addrUp.substring(0, 30)) + '%';
+  const rows = cityUp
+    ? db.prepare('SELECT * FROM parcels WHERE city = ? AND address_norm LIKE ? LIMIT 10').all(cityUp, pattern)
+    : db.prepare('SELECT * FROM parcels WHERE address_norm LIKE ? LIMIT 10').all(pattern);
+  return rows.map(flRowToRecord);
+}
+
 function searchStatewideByAddress(address, city) {
+  // Prefer the SQLite index. It's built from the same city files, so when present
+  // it's authoritative (fast for both hits and not-founds). Fall back to grep only
+  // when the index hasn't been built yet (searchSqliteByAddress returns null).
+  const sql = searchSqliteByAddress(address, city);
+  if (sql !== null) return sql;
   try {
     const addrUp = address.toUpperCase().replace(/[^A-Z0-9 ]/g, '').trim();
     const cityUp = city ? city.toUpperCase().trim() : '';
@@ -286,14 +331,18 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   const lat = prop.lat;
   const lng = prop.lng;
 
-  const [flood, census, layers] = await Promise.all([
+  // Run ALL external enrichment calls in parallel. elevation + investor-signals used
+  // to run sequentially after this block, stacking their latency onto the cold path;
+  // they're independent of flood/census/zoning, so fold them in. (Jun 20 2026)
+  const [flood, census, layers, elevation, investorSignals] = await Promise.all([
     lat && lng ? getFloodZone(lat, lng) : { zone: 'COORDINATES_UNAVAILABLE' },
     getCensusData(address, city, 'FL'),
-    lat && lng ? identifyAllLayers(lat, lng) : {}
+    lat && lng ? identifyAllLayers(lat, lng) : {},
+    getElevation(lat, lng),
+    getInvestorSignals(prop, lat, lng)
   ]);
 
   const zoning = layers['Municipal Zoning']?.[0] || layers['County Zoning']?.[0] || {};
-  const elevation = await getElevation(lat, lng);
   const schools = findNearestSchools(lat, lng, 3.0);
   const permits = findBuildingPermits(prop.FOLIO, prop.TRUE_SITE_ADDR);
   const hospitals = findNearestHospitals(lat, lng, 15.0);
@@ -303,7 +352,6 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   const roadWork = findNearbyRoadWork(lat, lng, 2.0);
   const economics = getMarketEconomics();
   const statewideEcon = getStatewideEconomics(prop.TRUE_SITE_CITY);
-  const investorSignals = await getInvestorSignals(prop, lat, lng);
 
   const zip = prop.TRUE_SITE_ZIP_CODE ? String(prop.TRUE_SITE_ZIP_CODE).substring(0, 5) : null;
   const irsIncome = getIRSIncomeByZip(zip);

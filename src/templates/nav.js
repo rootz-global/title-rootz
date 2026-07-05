@@ -1,9 +1,6 @@
 /**
- * AI_CONTEXT: Navigation bar component — persistent header for all pages.
- * Teal/dark-blue gradient (#1e3a5f -> #0f766e).
- *
- * Exports:
- *   - renderNav(account) — returns HTML string
+ * Nav Template — Persistent header for all Rootz Property Intelligence pages.
+ * Matches the existing teal/dark-blue gradient (#1e3a5f → #0f766e).
  */
 
 export function renderNav(account) {
