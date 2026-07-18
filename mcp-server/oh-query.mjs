@@ -119,47 +119,72 @@ function searchOhioByAddress(address, city) {
               };
             }
 
-            // Franklin County (Columbus) format — default
+            // Franklin-style CAMA format — also covers Summit, Montgomery and
+            // Cuyahoga, which publish the SAME column names but differ in case
+            // (Summit ships lowercase `siteaddress`) and qualification
+            // (Montgomery ships SDE.mc_parcel_polygon.LOC_AREA). Resolve
+            // case-insensitively on the last dot-segment; matching exact-case
+            // only returned a record with every field blank.
+            const fieldIndex = new Map();
+            for (const k of Object.keys(rec)) {
+              const short = k.split('.').pop().toUpperCase();
+              if (!fieldIndex.has(short)) fieldIndex.set(short, k);
+            }
+            const f = (...names) => {
+              for (const n of names) {
+                const k = fieldIndex.get(n.toUpperCase());
+                if (k !== undefined && rec[k] !== null && rec[k] !== '') return rec[k];
+              }
+              return undefined;
+            };
+            // Summit is the only one of these carrying postal-address columns.
+            const isSummit = fieldIndex.has('PSTLCITY');
+            const county = isSummit ? 'Summit'
+              : fieldIndex.has('LOC_AREA') ? 'Montgomery'
+              : fieldIndex.has('PARCEL_CITY') ? 'Cuyahoga'
+              : 'Franklin';
             return {
-              TRUE_SITE_ADDR: rec.SITEADDRESS || rec.PRPRTYDSCRP || '',
+              // Second/third alternates are Montgomery's WEB_CAMA column names,
+              // which differ from Franklin's by more than case.
+              TRUE_SITE_ADDR: (f('SITEADDRESS', 'LOC_FADDRESS', 'PARLOC', 'PRPRTYDSCRP') || '').toString().trim(),
               TRUE_SITE_CITY: cityUp,
-              TRUE_SITE_ZIP_CODE: rec.ZIPCD || '',
-              TRUE_OWNER1: rec.OWNERNME1 || '',
-              TRUE_OWNER2: rec.OWNERNME2 || '',
-              TRUE_MAILING_ADDR1: rec.MAILADD1 || rec.MAILNME1 || '',
-              TRUE_MAILING_CITY: rec.MAILCITY || '',
-              TRUE_MAILING_STATE: rec.MAILSTATE || 'OH',
-              TRUE_MAILING_ZIP_CODE: rec.MAILZIP || '',
-              FOLIO: rec.PARCELID || '',
-              DOR_CODE_CUR: rec.CLASSCD || rec.USECD || '',
-              DOR_DESC: rec.CLASSDSCRP || '',
-              YEAR_BUILT: rec.RESYRBLT || 0,
-              BUILDING_HEATED_AREA: rec.RESFLRAREA || 0,
-              LOT_SIZE: rec.STATEDAREA ? rec.STATEDAREA * 43560 : 0,
-              BUILDING_VAL_CUR: rec.BLDVALUEBASE || null,
-              LAND_VAL_CUR: rec.LNDVALUEBASE || null,
-              TOTAL_VAL_CUR: rec.TOTVALUEBASE || null,
-              BEDROOM_COUNT: rec.BEDRMS || 0,
-              BATHROOM_COUNT: rec.BATHS || 0,
-              HALF_BATHROOM_COUNT: rec.HBATHS || 0,
-              SALE_PRICE: rec.SALEPRICE || null,
-              SALE_DATE: rec.SALEDATE ? new Date(parseInt(rec.SALEDATE)).toISOString().split('T')[0] : null,
-              TAXABLE_VAL: rec.CNTTXBLVAL || null,
-              TOTAL_TAX: rec.TOTCNTTXOD || null,
-              OWNER_OCCUPIED: rec.OWNEROCCUPIED === 'Y',
-              HOMESTEAD: rec.HOMSTD === 'Y',
-              RENTAL: rec.RENTAL === 'Y',
-              FLOOD_ZONE: rec.FLOOD || '',
-              SCHOOL_DISTRICT: rec.SCHLDSCRP || '',
-              TAX_DISTRICT: rec.CVTTXDSCRP || '',
-              CONDITION: rec.COND || '',
-              GRADE: rec.GRADE || '',
-              BASEMENT: rec.BASEMENT || '',
-              AC: rec.AIRCOND || '',
-              WALL_TYPE: rec.WALL || '',
-              ROOMS: rec.ROOMS || 0,
-              FIREPLACE: rec.FIREPLC || 0,
-              _state: 'OH', _county: 'Franklin', _source: 'ohio-franklin'
+              TRUE_SITE_ZIP_CODE: f('ZIPCD', 'PSTLZIP5', 'LOC_ZIP') || '',
+              TRUE_OWNER1: f('OWNERNME1', 'OWNER_NAME1') || '',
+              TRUE_OWNER2: f('OWNERNME2', 'OWNER_NAME2') || '',
+              TRUE_MAILING_ADDR1: f('MAILADD1', 'PSTLADDRESS', 'MAILING_ADDR1', 'MAILNME1') || '',
+              TRUE_MAILING_CITY: f('MAILCITY', 'PSTLCITY', 'MCITYNAME') || '',
+              TRUE_MAILING_STATE: f('MAILSTATE', 'PSTLSTATE', 'MSTATECODE') || 'OH',
+              TRUE_MAILING_ZIP_CODE: f('MAILZIP', 'PSTLZIP5', 'MZIP1') || '',
+              FOLIO: f('PARCELID', 'PARID', 'TAXPINNO') || '',
+              DOR_CODE_CUR: f('CLASSCD', 'USECD', 'CLASS') || '',
+              DOR_DESC: f('CLASSDSCRP', 'USEDSCRP', 'LUC') || '',
+              YEAR_BUILT: f('RESYRBLT', 'DWEL_YRBLT', 'COMM_YRBLT') || 0,
+              BUILDING_HEATED_AREA: f('RESFLRAREA', 'BLDGAREA', 'DWEL_SFLA', 'COMM_SF') || 0,
+              LOT_SIZE: (f('STATEDAREA', 'ACRES') || 0) * 43560,
+              BUILDING_VAL_CUR: f('BLDVALUEBASE', 'BLDGVALUE', 'APPRBLDG') || null,
+              LAND_VAL_CUR: f('LNDVALUEBASE', 'LNDVALUE', 'APPRLAND') || null,
+              TOTAL_VAL_CUR: f('TOTVALUEBASE', 'CNTMARVAL', 'APPRTOTAL') || null,
+              BEDROOM_COUNT: f('BEDRMS', 'DWEL_RMBED') || 0,
+              BATHROOM_COUNT: f('BATHS', 'DWEL_FIXBATH') || 0,
+              HALF_BATHROOM_COUNT: f('HBATHS', 'DWEL_FIXHALF') || 0,
+              SALE_PRICE: f('SALEPRICE', 'SALE_PRICE') || null,
+              SALE_DATE: f('SALEDATE') ? new Date(parseInt(f('SALEDATE'))).toISOString().split('T')[0] : (f('SALE_DATE') || null),
+              TAXABLE_VAL: f('CNTTXBLVAL', 'ASSDTOTAL') || null,
+              TOTAL_TAX: f('TOTCNTTXOD') || null,
+              OWNER_OCCUPIED: f('OWNEROCCUPIED') === 'Y',
+              HOMESTEAD: f('HOMSTD') === 'Y' || f('HMSDFLAG') === 'Y',
+              RENTAL: f('RENTAL') === 'Y',
+              FLOOD_ZONE: f('FLOOD') || '',
+              SCHOOL_DISTRICT: f('SCHLDSCRP') || '',
+              TAX_DISTRICT: f('CVTTXDSCRP') || '',
+              CONDITION: f('COND') || '',
+              GRADE: f('GRADE') || '',
+              BASEMENT: f('BASEMENT') || '',
+              AC: f('AIRCOND') || '',
+              WALL_TYPE: f('WALL') || '',
+              ROOMS: f('ROOMS') || 0,
+              FIREPLACE: f('FIREPLC') || 0,
+              _state: 'OH', _county: county, _source: `ohio-${county.toLowerCase()}`
             };
           } catch { return null; }
         }).filter(Boolean);
