@@ -20,6 +20,19 @@ export const FEMA_FLOOD = 'https://hazards.fema.gov/arcgis/rest/services/public/
 export const CENSUS_GEOCODER = 'https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress';
 export const CENSUS_ACS = 'https://api.census.gov/data/2022/acs/acs5';
 
+// The ACS API now REJECTS keyless requests: it 302s to /data/missing_key.html,
+// which parses as neither JSON nor an error, so callers saw an opaque failure
+// rather than "you need a key". Set CENSUS_API_KEY in .env (free, instant:
+// https://api.census.gov/data/key_signup.html). Without it the live-API
+// fallback cannot work and callers must rely on the pre-cached block groups.
+export const CENSUS_API_KEY = process.env.CENSUS_API_KEY || '';
+export function withCensusKey(url) {
+  if (!CENSUS_API_KEY) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(CENSUS_API_KEY);
+}
+export const CENSUS_KEY_HINT =
+  'Census ACS requires an API key; set CENSUS_API_KEY (https://api.census.gov/data/key_signup.html)';
+
 // ─── USGS Elevation ──────────────────────────────────────────────
 export const USGS_EPQS = 'https://epqs.nationalmap.gov/v1/json';
 

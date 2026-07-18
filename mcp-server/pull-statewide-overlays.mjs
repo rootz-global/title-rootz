@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { withCensusKey, warnIfNoCensusKey, CENSUS_API_KEY, CENSUS_KEY_HINT } from './lib/census.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, 'data', 'florida');
@@ -166,9 +167,10 @@ async function pullCensus() {
   const variables = 'B01003_001E,B19013_001E,B25077_001E,B25064_001E,B01002_001E,B19301_001E,B25002_001E,B25002_002E,B25002_003E,B25003_001E,B25003_002E';
   const url = `https://api.census.gov/data/2022/acs/acs5?get=${variables}&for=block%20group:*&in=state:12&in=county:*`;
 
-  const data = await fetchJSON(url, 120000);
+  warnIfNoCensusKey();
+  const data = await fetchJSON(withCensusKey(url), 120000);
   if (!data || !Array.isArray(data)) {
-    console.log('  Census pull failed');
+    console.log(`  Census pull failed. ${CENSUS_API_KEY ? '' : CENSUS_KEY_HINT}`);
     return 0;
   }
 

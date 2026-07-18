@@ -23,6 +23,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import https from 'https';
 import crypto from 'crypto';
+import { withCensusKey, warnIfNoCensusKey, CENSUS_API_KEY, CENSUS_KEY_HINT } from './lib/census.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, 'data', 'florida');
@@ -137,7 +138,14 @@ async function pullCensus() {
 
   const url = 'https://api.census.gov/data/2022/acs/acs5?get=B19013_001E,B01003_001E,B25077_001E,B25064_001E,B25003_001E,B25003_002E,B01002_001E,B19301_001E,B25002_001E,B25002_002E,B25002_003E,NAME&for=block%20group:*&in=state:12+county:086';
 
-  const data = await fetchJSON(url);
+  warnIfNoCensusKey();
+  const data = await fetchJSON(withCensusKey(url));
+  // Keyless requests redirect to an HTML page, so `data` comes back as null or
+  // a non-array and `data[0]` threw — killing the whole annual refresh run.
+  if (!Array.isArray(data) || data.length < 2) {
+    console.error(`  [census] FAILED: no rows returned. ${CENSUS_API_KEY ? '' : CENSUS_KEY_HINT}`);
+    return { layer: 'census', records: 0, error: 'no data' };
+  }
   const header = data[0];
   const rows = data.slice(1);
   const results = rows.map(row => {

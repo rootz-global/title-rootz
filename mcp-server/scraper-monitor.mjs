@@ -19,9 +19,17 @@ import fs from 'fs';
 import path from 'path';
 import https from 'https';
 import { fileURLToPath } from 'url';
+import { withCensusKey } from './lib/census.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MONITOR_FILE = path.join(__dirname, '..', 'data', 'florida', 'monitor-status.json');
+// The repo nests these scripts under mcp-server/ (data lives at ../data) but the
+// server deploys them flat into /var/www/title.rootz.global/ (data lives at
+// ./data). Resolve whichever exists so the same file works in both layouts —
+// hardcoding one silently wrote status to a path nobody reads.
+const DATA_ROOT = fs.existsSync(path.join(__dirname, 'data'))
+  ? path.join(__dirname, 'data')
+  : path.join(__dirname, '..', 'data');
+const MONITOR_FILE = path.join(DATA_ROOT, 'florida', 'monitor-status.json');
 
 // ─── Data Sources to Monitor ──────────────────────────────────────
 const SOURCES = {
@@ -71,7 +79,9 @@ const SOURCES = {
   },
   'census-acs': {
     name: 'US Census ACS API',
-    url: 'https://api.census.gov/data/2022/acs/acs5?get=B01003_001E&for=county:086&in=state:12',
+    // Keyless ACS requests 302 to missing_key.html, so this check reports ERROR
+    // until CENSUS_API_KEY is set (and the cron passes --env-file=.env).
+    url: withCensusKey('https://api.census.gov/data/2022/acs/acs5?get=B01003_001E&for=county:086&in=state:12'),
     type: 'census',
     sslHost: 'api.census.gov',
     refreshSchedule: 'annual',
