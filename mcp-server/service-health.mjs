@@ -25,7 +25,11 @@ const STATUS_FILE = path.join(DATA, 'health-status.json');
 const BASE = process.env.HEALTH_BASE || 'https://title.rootz.global';
 const ALERT_EMAIL = process.env.ALERT_EMAIL || 'steven@sprague.com';
 const now = Date.now();
-const results = [];
+// `let`, not `const`: the transient-failure retry path below swaps this array
+// out. As a const that threw TypeError mid-run, so ANY failing endpoint check
+// killed the health run before it could alert or write status — the one case
+// the alerting exists for.
+let results = [];
 const add = (cat, name, pass, detail) => results.push({ cat, name, pass, detail });
 
 async function getJSON(p) {
@@ -58,6 +62,11 @@ async function checkEndpoints() {
 // [ relative path under data/, max-age days (~2× cron cadence), label ]
 // EVERY dataset an engine reads belongs here. Threshold tuned to the cron so a
 // FAILING refresh trips this well before the data is dangerously old.
+// A 4th element marks datasets whose filenames carry the date of the DATA
+// itself (Broward ships MM-DD-YYYYdoc-ver.txt). mtime only proves when we last
+// downloaded — a harvester that re-fetches the same stale files, or a source
+// that has stopped publishing, still looks perfectly fresh by mtime. Where a
+// content date is available, check that instead.
 const DATASETS = [
   ['florida/cities', 40, 'FL statewide parcels (monthly)'],
   ['florida/miami-dade-parcels.jsonl', 40, 'FL Miami-Dade parcels (monthly)'],
@@ -66,9 +75,21 @@ const DATASETS = [
   ['nc/chatham/cama-parcels.jsonl', 40, 'NC Chatham parcels (monthly)'],
   ['nc/chatham/rod-instruments.jsonl', 12, 'NC Register of Deeds (weekly)'],
   ['nc/onemap', 40, 'NC statewide parcels (monthly)'],
-  ['broward-clerk', 3, 'Broward court records (daily)'],
+  ['broward-clerk', 3, 'Broward court records (daily)', /^(\d{2})-(\d{2})-(\d{4})doc-ver\.txt$/],
   ['dbpr-licenses', 40, 'FL vacation rentals (monthly)'],
 ];
+
+// Newest data date encoded in a directory's filenames, or 0 if none parse.
+function newestContentDate(dir, pattern) {
+  let newest = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const m = name.match(pattern);
+    if (!m) continue;
+    const t = Date.parse(`${m[3]}-${m[1]}-${m[2]}T00:00:00Z`);
+    if (t && t > newest) newest = t;
+  }
+  return newest;
+}
 // A directory's mtime only moves when entries are added or removed — rewriting
 // files in place leaves it untouched. Statting the directory therefore reports
 // a rebuilt index as ancient (and, worse, a half-finished rebuild as merely
@@ -86,9 +107,21 @@ function newestMtime(fp) {
   return newest;  // 0 when the directory is empty → reads as maximally stale
 }
 function checkFreshness() {
-  for (const [rel, maxDays, label] of DATASETS) {
+  for (const [rel, maxDays, label, datePattern] of DATASETS) {
     const fp = path.join(DATA, rel);
     if (!fs.existsSync(fp)) { add('freshness', label, false, 'MISSING'); continue; }
+
+    if (datePattern && fs.statSync(fp).isDirectory()) {
+      const contentDate = newestContentDate(fp, datePattern);
+      if (contentDate) {
+        const ageDays = (now - contentDate) / 86400000;
+        const asOf = new Date(contentDate).toISOString().slice(0, 10);
+        add('freshness', label, ageDays <= maxDays,
+            `data as of ${asOf}, ${ageDays.toFixed(1)}d old (max ${maxDays})`);
+        continue;
+      }
+    }
+
     const mtime = newestMtime(fp);
     if (!mtime) { add('freshness', label, false, 'EMPTY'); continue; }
     const ageDays = (now - mtime) / 86400000;

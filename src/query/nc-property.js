@@ -31,6 +31,8 @@ const CAMA_FILE = path.join(NC_DIR, 'cama-parcels.jsonl');
 // ─── helpers ──────────────────────────────────────────────────────
 const up = s => (s == null ? '' : String(s)).toUpperCase().trim();
 const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+// Coerce upstream GIS values before string ops — columns are not type-stable.
+const str = v => (v === null || v === undefined ? '' : String(v).trim());
 const SUF = { ROAD:'RD', STREET:'ST', DRIVE:'DR', LANE:'LN', AVENUE:'AVE', COURT:'CT',
   CIRCLE:'CIR', BOULEVARD:'BLVD', PLACE:'PL', TRAIL:'TRL', HIGHWAY:'HWY', PARKWAY:'PKWY' };
 const normStreet = s => up(s).replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).map(w => SUF[w] || w).filter(Boolean).join(' ').trim();
@@ -78,9 +80,13 @@ function oneMapSignalsAndScore(r) {
 function oneMapToRow(r) {
   const { signals, score } = oneMapSignalsAndScore(r);
   return {
-    parcelId: r.parno || '', owner: (r.ownname || '').trim(),
-    siteAddress: (r.siteadd || '').trim(), community: r.scity || r.cntyname || '',
-    mailAddress: (r.mailadd || '').trim(), mailCSZ: [r.mcity, r.mstate, r.mzip].filter(Boolean).join(' ').trim(),
+    // str(), not `(x || '').trim()`: these are raw ArcGIS columns whose types
+    // are not guaranteed. A numeric value makes .trim() throw and 500s the
+    // whole endpoint — that is how FL search went down when an upstream road
+    // export started sending CONSTDATE as a number.
+    parcelId: r.parno || '', owner: str(r.ownname),
+    siteAddress: str(r.siteadd), community: r.scity || r.cntyname || '',
+    mailAddress: str(r.mailadd), mailCSZ: [r.mcity, r.mstate, r.mzip].filter(Boolean).join(' ').trim(),
     mailState: r.mstate || mailStateOf(r.mailadd), county: r.cntyname,
     landUse: '', acres: num(r.gisacres) || null,
     totalFMV: num(r.parval) || null, landFMV: num(r.landval) || null, bldgFMV: num(r.improvval),
@@ -403,7 +409,7 @@ export async function assembleNCPropertyIntelligence(address, city = '', county 
   const mortgage = mortgageFor(p.parcel_number); // OCR'd deed-of-trust, if processed
   const signals = ncSignals(p);
   if (mortgage?.loanAmount) signals.push(`Mortgage on record ($${Number(mortgage.loanAmount).toLocaleString()} ${mortgage.lender || ''})`.trim());
-  const owner = (p.current_owners || p.jan1_owners || '').trim();
+  const owner = str(p.current_owners || p.jan1_owners);
   const ownerLookup = up(owner).replace(/[^A-Z ]/g, '').trim().length > 3
     ? `https://www.truepeoplesearch.com/results?name=${encodeURIComponent(owner.replace(/[^a-zA-Z ]/g, '').trim())}&citystatezip=${encodeURIComponent(p.csz || 'Pittsboro NC')}`
     : null;
@@ -435,7 +441,7 @@ export async function assembleNCPropertyIntelligence(address, city = '', county 
       })).digest('hex')
     },
     property: {
-      address: (p.physical_street_address || '').trim(),
+      address: str(p.physical_street_address),
       city: city || p.community_name || 'Chatham County', state: 'NC',
       parcelId: p.parcel_number,
       coordinates: lat && lng ? { lat, lng } : null,
