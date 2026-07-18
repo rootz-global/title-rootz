@@ -69,11 +69,29 @@ const DATASETS = [
   ['broward-clerk', 3, 'Broward court records (daily)'],
   ['dbpr-licenses', 40, 'FL vacation rentals (monthly)'],
 ];
+// A directory's mtime only moves when entries are added or removed — rewriting
+// files in place leaves it untouched. Statting the directory therefore reports
+// a rebuilt index as ancient (and, worse, a half-finished rebuild as merely
+// "stale"). For directories, use the NEWEST contained file instead.
+function newestMtime(fp) {
+  const st = fs.statSync(fp);
+  if (!st.isDirectory()) return st.mtimeMs;
+  let newest = 0;
+  for (const name of fs.readdirSync(fp)) {
+    try {
+      const s = fs.statSync(path.join(fp, name));
+      if (!s.isDirectory() && s.mtimeMs > newest) newest = s.mtimeMs;
+    } catch {}
+  }
+  return newest;  // 0 when the directory is empty → reads as maximally stale
+}
 function checkFreshness() {
   for (const [rel, maxDays, label] of DATASETS) {
     const fp = path.join(DATA, rel);
     if (!fs.existsSync(fp)) { add('freshness', label, false, 'MISSING'); continue; }
-    const ageDays = (now - fs.statSync(fp).mtimeMs) / 86400000;
+    const mtime = newestMtime(fp);
+    if (!mtime) { add('freshness', label, false, 'EMPTY'); continue; }
+    const ageDays = (now - mtime) / 86400000;
     add('freshness', label, ageDays <= maxDays, `${ageDays.toFixed(1)}d old (max ${maxDays})`);
   }
 }

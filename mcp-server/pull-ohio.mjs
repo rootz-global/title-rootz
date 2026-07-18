@@ -228,7 +228,24 @@ async function pullCounty(countyId) {
 // BUILD CITY INDEX (same model as FL)
 // ═══════════════════════════════════════════════════════════════
 
-async function buildCityIndex(countyId) {
+// Rebuild every ready county's slice of the shared city index in one pass.
+// Counties share one city namespace (DAYTON appears in both Montgomery and
+// Hamilton), so indexing them one at a time with truncating writes lets the
+// last county silently erase the previous one's parcels. Clear once, then
+// append per county.
+async function rebuildAllCityIndexes() {
+  const cityDir = path.join(DATA_DIR, 'cities');
+  if (fs.existsSync(cityDir)) {
+    for (const f of fs.readdirSync(cityDir)) {
+      if (f.startsWith('OH_') && f.endsWith('.jsonl')) fs.unlinkSync(path.join(cityDir, f));
+    }
+  }
+  for (const [id, c] of Object.entries(COUNTIES)) {
+    if (c.status === 'ready') await buildCityIndex(id, true);
+  }
+}
+
+async function buildCityIndex(countyId, append = false) {
   const inFile = path.join(DATA_DIR, `${countyId}-parcels.jsonl`);
   const cityDir = path.join(DATA_DIR, 'cities');
   if (!fs.existsSync(inFile)) { console.log(`No parcel file for ${countyId}`); return; }
@@ -252,23 +269,32 @@ async function buildCityIndex(countyId) {
       const rec = JSON.parse(line);
       // Extract city — different counties use different field names.
       // Some (Montgomery) use fully-qualified names like SDE.mc_parcel_polygon.LOC_AREA
-      // Helper: try plain name first, then search for qualified match
       const getField = (plainName) => {
-        if (rec[plainName] !== undefined) return rec[plainName];
-        // Search for fully-qualified field ending with the plain name
-        const key = Object.keys(rec).find(k => k.endsWith('.' + plainName));
-        return key ? rec[key] : '';
+        // Match case-insensitively on the last dot-segment. Counties differ in
+        // both qualification (SDE.mc_parcel_polygon.LOC_AREA) and case (Summit
+        // ships lowercase `cvttxdscrp`); an exact-case match silently dropped
+        // every Summit parcel into _UNKNOWN.
+        const want = plainName.toUpperCase();
+        const key = Object.keys(rec).find(k => k.split('.').pop().toUpperCase() === want);
+        return key !== undefined && rec[key] !== null ? rec[key] : '';
       };
 
       let city = '';
       // City field varies by county: tax-district (Summit/Franklin), LOC_AREA
-      // (Montgomery), MAILCITY (Hamilton), parcel_city/mail_city (Cuyahoga).
-      city = (getField('CVTTXDSCRP') || getField('LOC_AREA') || getField('MAILCITY') || getField('parcel_city') || getField('mail_city') || '').trim().toUpperCase().replace(/ CITY$| VILLAGE$| TOWNSHIP$/i, '');
+      // (Montgomery), OWNADCITY (Hamilton), parcel_city/mail_city (Cuyahoga).
+      // NOTE: Hamilton's CAGIS export carries no situs-city column at all, so
+      // OWNADCITY (the OWNER's mailing city) is the only city available. Its
+      // parcels are therefore bucketed by where the owner receives mail, not
+      // where the property sits — absentee-owned Cincinnati parcels land under
+      // the owner's out-of-state city. Fixing that needs a TAXDST code→
+      // jurisdiction lookup from CAGIS.
+      city = (getField('CVTTXDSCRP') || getField('LOC_AREA') || getField('MAILCITY') || getField('OWNADCITY') || getField('parcel_city') || getField('mail_city') || '').trim().toUpperCase().replace(/ CITY$| VILLAGE$| TOWNSHIP$/i, '');
       if (!city) city = '_UNKNOWN';
       const safeCity = city.replace(/[^A-Z0-9 ]/g, '').replace(/ +/g, '_');
 
       if (!cityStreams[safeCity]) {
-        cityStreams[safeCity] = fs.createWriteStream(path.join(cityDir, `OH_${safeCity}.jsonl`));
+        cityStreams[safeCity] = fs.createWriteStream(
+          path.join(cityDir, `OH_${safeCity}.jsonl`), { flags: append ? 'a' : 'w' });
         cityCounts[safeCity] = 0;
       }
       cityStreams[safeCity].write(line + '\n');
@@ -305,10 +331,12 @@ async function main() {
     const target = args[1];
     if (target === 'all') {
       for (const [id, c] of Object.entries(COUNTIES)) {
-        // pull AND rebuild this county's city index — the index is what the
-        // engine reads; pulling without re-indexing leaves search data stale.
-        if (c.status === 'ready') { const n = await pullCounty(id); if (n > 0) await buildCityIndex(id); }
+        if (c.status === 'ready') await pullCounty(id);
       }
+      // Re-index every county AFTER pulling them all — the index is what the
+      // engine reads, and indexing per-county as we go would let each county
+      // truncate the shared city files written by the previous one.
+      await rebuildAllCityIndexes();
     } else if (COUNTIES[target]) {
       const count = await pullCounty(target);
       if (count > 0 && args.includes('--index')) {
@@ -317,6 +345,11 @@ async function main() {
     } else {
       console.log(`Unknown county: ${target}`);
     }
+    return;
+  }
+
+  if (args[0] === '--index-all') {
+    await rebuildAllCityIndexes();
     return;
   }
 
@@ -334,6 +367,8 @@ Usage:
   node pull-ohio.mjs --county franklin --index Pull + build city index
   node pull-ohio.mjs --county all              Pull all ready counties
   node pull-ohio.mjs --index franklin          Build city index from existing data
+  node pull-ohio.mjs --index-all               Rebuild ALL counties' city index (safe;
+                                               counties share the city namespace)
   `);
 }
 

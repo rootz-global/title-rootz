@@ -158,7 +158,9 @@ function showStats(db) {
   const bySignal = db.prepare('SELECT signal, COUNT(*) as c FROM signals GROUP BY signal ORDER BY c DESC').all();
   console.log('\n  By signal type:');
   for (const row of bySignal) {
-    console.log(`    ${row.signal.padEnd(22)} ${row.c.toLocaleString().padStart(8)}`);
+    // Docs whose type isn't in FARMING_DOC_TYPES land here with a null signal;
+    // don't let a display line abort the build (cron reads the exit code).
+    console.log(`    ${String(row.signal ?? '(unclassified)').padEnd(22)} ${row.c.toLocaleString().padStart(8)}`);
   }
 
   const byYear = db.prepare(`
