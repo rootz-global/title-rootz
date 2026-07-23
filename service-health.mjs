@@ -1,0 +1,272 @@
+#!/usr/bin/env node
+// Service health audit for title.rootz.global — answers two questions and ALERTS:
+//   1. OPERATIONAL: do the live query endpoints actually return real data?
+//   2. UPDATING:    is each dataset fresh for its refresh cadence, or has a
+//                   refresh silently stopped? (Thresholds are ~2× the cron cadence
+//                   so a *failing* weekly/monthly job is caught early, not at 45d.)
+//
+// On failure it emails an alert (Gmail OAuth via lib/email-service.mjs), deduped
+// so it doesn't spam (alerts only when the failure set changes or >12h elapsed).
+// Writes data/health-status.json (served at /api/health) and exits non-zero on fail.
+//
+// THE RULE this enforces: every dataset an engine reads MUST appear in DATASETS
+// below with a threshold matching its refresh cron. Adding a state? Add its
+// datasets here too — that's how staleness gets caught automatically.
+//
+// Usage: node service-health.mjs   (cron: every 6h)
+
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DATA = path.join(__dirname, 'data');
+const STATUS_FILE = path.join(DATA, 'health-status.json');
+const BASE = process.env.HEALTH_BASE || 'https://title.rootz.global';
+const ALERT_EMAIL = process.env.ALERT_EMAIL || 'steven@sprague.com';
+const now = Date.now();
+// `let`, not `const`: the transient-failure retry path below swaps this array
+// out. As a const that threw TypeError mid-run, so ANY failing endpoint check
+// killed the health run before it could alert or write status — the one case
+// the alerting exists for.
+let results = [];
+// `level` distinguishes a hard FAIL (pages) from a soft WARN (visible on
+// /api/health but does NOT page — used when a source we don't control is
+// lagging while our own harvester is healthy). Defaults derive from `pass` so
+// every existing caller keeps its old behaviour.
+const add = (cat, name, pass, detail, level) =>
+  results.push({ cat, name, pass, detail, level: level || (pass ? 'ok' : 'fail') });
+
+async function getJSON(p) {
+  try { const r = await fetch(BASE + p, { signal: AbortSignal.timeout(30000) }); return await r.json(); }
+  catch (e) { return { _err: e.message }; }
+}
+
+// ── 1. ENDPOINTS (operational) ────────────────────────────────────
+async function checkEndpoints() {
+  const wk = await getJSON('/.well-known/ai');
+  add('discovery', '.well-known/ai', wk.name === 'Rootz Property Intelligence', wk.tagline || wk._err || '');
+  const oa = await getJSON('/api/openapi.json');
+  add('discovery', 'openapi spec', Object.keys(oa.paths || {}).includes('/api/nc/farm'), `${Object.keys(oa.paths || {}).length} paths`);
+
+  const flf = await getJSON('/api/fl/farm?city=HOLLYWOOD&limit=3');
+  add('endpoint', 'FL farm', (flf.total || flf.count || (flf.results || []).length) > 0, `${flf.total || flf.count || (flf.results || []).length} found`);
+  const fls = await getJSON('/api/fl/search?address=1000+BRICKELL+AVE&city=MIAMI');
+  add('endpoint', 'FL search', !!fls.property, fls.property ? '1000 BRICKELL AVE' : (fls.error || 'no property'));
+  const oh = await getJSON('/api/oh/search?address=100+E+BROAD+ST&city=COLUMBUS');
+  add('endpoint', 'OH search', !!(oh.property?.owner?.name1), oh.property?.parcelId || oh.error || '');
+  const nc = await getJSON('/api/nc/search?address=1300+RIVER+FOREST+RD&state=NC');
+  add('endpoint', 'NC search (Chatham)', !!(nc.property?.owner?.name1), nc.property?.owner?.name1 || nc.error || '');
+  const ncf = await getJSON('/api/nc/farm?signals=vacant,absentee&limit=2');
+  add('endpoint', 'NC farm (Chatham)', (ncf.total || 0) > 0, `${ncf.total} matches`);
+  const ncw = await getJSON('/api/nc/farm?county=Wake&signals=absentee&limit=1');
+  add('endpoint', 'NC statewide (Wake)', (ncw.total || 0) > 0, `${ncw.total} Wake matches`);
+}
+
+// ── 2. DATA FRESHNESS (updating) ──────────────────────────────────
+// [ relative path under data/, max-age days (~2× cron cadence), label ]
+// EVERY dataset an engine reads belongs here. Threshold tuned to the cron so a
+// FAILING refresh trips this well before the data is dangerously old.
+// A 4th element marks datasets whose filenames carry the date of the DATA
+// itself (Broward ships MM-DD-YYYYdoc-ver.txt). mtime only proves when we last
+// downloaded — a harvester that re-fetches the same stale files, or a source
+// that has stopped publishing, still looks perfectly fresh by mtime. Where a
+// content date is available, check that instead.
+//
+// A 5th element (opts) makes a dataset SOURCE-AWARE: it separates "our harvester
+// broke" (page me) from "the upstream source stopped publishing" (their problem,
+// not a page). See checkFreshness for the three states it produces.
+const DATASETS = [
+  ['florida/cities', 40, 'FL statewide parcels (monthly)'],
+  ['florida/miami-dade-parcels.jsonl', 40, 'FL Miami-Dade parcels (monthly)'],
+  ['florida/building-permits.json', 14, 'FL building permits (weekly)'],
+  ['ohio/cities', 14, 'OH parcels city-index (weekly)'],
+  ['nc/chatham/cama-parcels.jsonl', 40, 'NC Chatham parcels (monthly)'],
+  ['nc/chatham/rod-instruments.jsonl', 12, 'NC Register of Deeds (weekly)'],
+  ['nc/onemap', 40, 'NC statewide parcels (monthly)'],
+  ['broward-clerk', 3, 'Broward court records (daily)', /^(\d{2})-(\d{2})-(\d{4})doc-ver\.txt$/,
+    // Broward is a county SFTP that skips weekends/holidays and periodically
+    // stalls on its own. A flat 3-day max therefore red-alerts (and re-emails
+    // every 12h) on every long weekend and every county-side stall, even though
+    // our pull ran perfectly. So: page only if OUR harvester hasn't run+connected
+    // in `harvestMaxHours`; if the harvester is healthy but the county is stale,
+    // WARN (no page) until the source has been dark for `sourceDarkDays`, which
+    // is a real "chase the county" condition worth a page.
+    { harvestStamp: '.last-harvest.json', harvestMaxHours: 30, sourceDarkDays: 14 }],
+  ['dbpr-licenses', 40, 'FL vacation rentals (monthly)'],
+];
+
+// Newest data date encoded in a directory's filenames, or 0 if none parse.
+function newestContentDate(dir, pattern) {
+  let newest = 0;
+  for (const name of fs.readdirSync(dir)) {
+    const m = name.match(pattern);
+    if (!m) continue;
+    const t = Date.parse(`${m[3]}-${m[1]}-${m[2]}T00:00:00Z`);
+    if (t && t > newest) newest = t;
+  }
+  return newest;
+}
+// A directory's mtime only moves when entries are added or removed — rewriting
+// files in place leaves it untouched. Statting the directory therefore reports
+// a rebuilt index as ancient (and, worse, a half-finished rebuild as merely
+// "stale"). For directories, use the NEWEST contained file instead.
+function newestMtime(fp) {
+  const st = fs.statSync(fp);
+  if (!st.isDirectory()) return st.mtimeMs;
+  let newest = 0;
+  for (const name of fs.readdirSync(fp)) {
+    try {
+      const s = fs.statSync(path.join(fp, name));
+      if (!s.isDirectory() && s.mtimeMs > newest) newest = s.mtimeMs;
+    } catch {}
+  }
+  return newest;  // 0 when the directory is empty → reads as maximally stale
+}
+// Three-state check for a dataset fed by an upstream source we don't control.
+// Returns true once it has recorded a result (so the caller skips the plain
+// path), false to fall through to the generic content-date check.
+//   1. Harvester stalled  → FAIL (page): our cron didn't run or couldn't reach
+//      the source within harvestMaxHours. Also the case if the stamp predates
+//      this feature (no stamp yet) AND the data is already stale.
+//   2. Source dark        → FAIL (page): harvester healthy, but the source has
+//      published nothing for sourceDarkDays — worth a human chasing the county.
+//   3. Source lagging      → WARN (no page): harvester healthy, source merely
+//      behind its normal cadence (weekend/holiday/short stall). Visible, quiet.
+//   otherwise             → PASS.
+function checkSourceAware(fp, maxDays, label, datePattern, opts) {
+  const stampPath = path.join(fp, opts.harvestStamp);
+  let harvestAgeH = Infinity;
+  if (fs.existsSync(stampPath)) {
+    try {
+      const at = Date.parse(JSON.parse(fs.readFileSync(stampPath, 'utf8')).at);
+      if (at) harvestAgeH = (now - at) / 3600000;
+    } catch { /* unreadable stamp → treat as no stamp */ }
+  }
+
+  const contentDate = newestContentDate(fp, datePattern);
+  if (!contentDate) return false; // nothing dated on disk — let generic path report it
+  const ageDays = (now - contentDate) / 86400000;
+  const asOf = new Date(contentDate).toISOString().slice(0, 10);
+
+  // 1. Our side: did the harvester run and reach the source recently?
+  if (harvestAgeH > opts.harvestMaxHours) {
+    // No fresh heartbeat. Only a real problem if the data is also stale — a
+    // brand-new stamp file simply hasn't been written yet on a fresh deploy.
+    if (ageDays > maxDays) {
+      const how = harvestAgeH === Infinity
+        ? 'no harvest heartbeat on disk'
+        : `last successful pull ${harvestAgeH.toFixed(0)}h ago`;
+      add('freshness', label, false,
+          `HARVESTER STALLED — ${how}; newest data ${asOf} (${ageDays.toFixed(1)}d). Check the cron / SFTP.`);
+      return true;
+    }
+    return false; // harvester quiet but data still fresh — let generic path pass it
+  }
+
+  // 2 & 3. Harvester is healthy from here on.
+  if (ageDays <= maxDays) {
+    add('freshness', label, true, `data as of ${asOf}, ${ageDays.toFixed(1)}d old (max ${maxDays})`);
+  } else if (ageDays <= opts.sourceDarkDays) {
+    add('freshness', label, true,
+        `source lagging — county last published ${asOf} (${ageDays.toFixed(1)}d); our harvester is healthy, nothing newer available`,
+        'warn');
+  } else {
+    add('freshness', label, false,
+        `SOURCE DARK — county has published nothing for ${ageDays.toFixed(1)}d (last ${asOf}); harvester healthy — chase Broward`);
+  }
+  return true;
+}
+
+function checkFreshness() {
+  for (const [rel, maxDays, label, datePattern, opts] of DATASETS) {
+    const fp = path.join(DATA, rel);
+    if (!fs.existsSync(fp)) { add('freshness', label, false, 'MISSING'); continue; }
+
+    // Source-aware path: split "our harvester broke" from "the source is stale".
+    if (opts && opts.harvestStamp && datePattern && fs.statSync(fp).isDirectory()) {
+      if (checkSourceAware(fp, maxDays, label, datePattern, opts)) continue;
+    }
+
+    if (datePattern && fs.statSync(fp).isDirectory()) {
+      const contentDate = newestContentDate(fp, datePattern);
+      if (contentDate) {
+        const ageDays = (now - contentDate) / 86400000;
+        const asOf = new Date(contentDate).toISOString().slice(0, 10);
+        add('freshness', label, ageDays <= maxDays,
+            `data as of ${asOf}, ${ageDays.toFixed(1)}d old (max ${maxDays})`);
+        continue;
+      }
+    }
+
+    const mtime = newestMtime(fp);
+    if (!mtime) { add('freshness', label, false, 'EMPTY'); continue; }
+    const ageDays = (now - mtime) / 86400000;
+    add('freshness', label, ageDays <= maxDays, `${ageDays.toFixed(1)}d old (max ${maxDays})`);
+  }
+}
+
+// ── 3. ALERT (email on failure, deduped) ──────────────────────────
+async function maybeAlert(status, failed) {
+  if (process.env.HEALTH_NO_ALERT) return; // manual/test runs: don't email
+  let prev = {};
+  try { prev = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); } catch {}
+  const sig = failed.map(f => f.name).sort().join('|');
+  const lastAt = prev.alertAt ? Date.parse(prev.alertAt) : 0;
+  const changed = sig !== (prev.alertSig || '');
+  const stale = (now - lastAt) > 12 * 3600 * 1000;
+  // carry forward by default
+  status.alertSig = prev.alertSig || '';
+  status.alertAt = prev.alertAt || null;
+  if (!failed.length) { status.alertSig = ''; return; }  // recovered — clear
+  if (!(changed || stale)) return;                        // already alerted recently, same issues
+  try {
+    const { sendEmail } = await import('./lib/email-service.mjs');
+    const rows = failed.map(f => `<li><b>${f.name}</b> — ${f.detail}</li>`).join('');
+    await sendEmail({
+      to: ALERT_EMAIL,
+      subject: `[Rootz Health] ${failed.length} check(s) FAILING on title.rootz.global`,
+      html: `<div style="font-family:system-ui,sans-serif;max-width:560px">
+        <h2 style="color:#b23b3b">Service health: ${failed.length} failing</h2>
+        <p>title.rootz.global self-check at ${new Date().toISOString()}:</p>
+        <ul>${rows}</ul>
+        <p style="color:#64748b;font-size:13px">Live status: <a href="${BASE}/api/health">${BASE}/api/health</a>.
+        Each line above states the cause. "HARVESTER STALLED" means our cron/SFTP failed (fix our side);
+        "SOURCE DARK" means the upstream county stopped publishing (chase them). A source merely lagging
+        its normal cadence shows as a non-paging WARN on the status page, not here.</p>
+      </div>`,
+    });
+    status.alertSig = sig; status.alertAt = new Date().toISOString(); status.alertSent = true;
+    console.log(`  ALERT emailed to ${ALERT_EMAIL} (${failed.length} failing)`);
+  } catch (e) { console.error('  alert email failed:', e.message); }
+}
+
+// ── run ───────────────────────────────────────────────────────────
+await checkEndpoints();
+// Retry transient endpoint/discovery failures before counting them: a single
+// momentary load spike or external-API hiccup must NOT page. A check only counts
+// as failed if it fails AGAIN ~10s later. (Freshness can't flap, so no retry.)
+const flappy = results.filter(r => (r.cat === 'endpoint' || r.cat === 'discovery') && !r.pass).map(r => r.name);
+if (flappy.length) {
+  console.log(`  ${flappy.length} endpoint check(s) failed first pass — retrying before alerting…`);
+  await new Promise(r => setTimeout(r, 10000));
+  const prior = results;
+  results = [];
+  await checkEndpoints();                 // re-run endpoint/discovery checks
+  const retry = Object.fromEntries(results.map(r => [r.name, r]));
+  results = prior.map(r => (r.cat === 'endpoint' || r.cat === 'discovery') ? (retry[r.name] || r) : r);
+}
+checkFreshness();
+const failed = results.filter(r => !r.pass);
+const warned = results.filter(r => r.level === 'warn');
+const status = { checkedAt: new Date().toISOString(), ok: failed.length === 0, passed: results.length - failed.length - warned.length, warned: warned.length, failed: failed.length, results };
+await maybeAlert(status, failed);
+try { fs.writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2)); } catch {}
+
+const warnNote = warned.length ? `, ${warned.length} WARN` : '';
+console.log(`\n=== Service Health — ${status.ok ? 'ALL OK' : failed.length + ' FAILING'}${warnNote} (${status.passed}/${results.length}) ===`);
+let cat = '';
+for (const r of results) { if (r.cat !== cat) { cat = r.cat; console.log(`\n[${cat}]`); } const tag = r.level === 'warn' ? 'WARN' : (r.pass ? 'PASS' : 'FAIL'); console.log(`  ${tag}  ${r.name.padEnd(34)} ${r.detail}`); }
+if (warned.length) console.log(`\nWARN (not paging): ${warned.map(w => w.name).join(', ')}`);
+if (failed.length) { console.log(`\nFAILING: ${failed.map(f => f.name).join(', ')}`); process.exit(1); }
+console.log('\nService is operational and all datasets are fresh.');
