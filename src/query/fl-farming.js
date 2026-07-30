@@ -18,11 +18,13 @@ import path from 'path';
 import { CITIES_DIR } from '../lib/config.js';
 import { getParcelDb } from '../lib/parcel-db.js';
 import { getClerkDb, _clerkStmts } from './fl-clerk.js';
+import { isBrowardParcel } from '../lib/constants.js';
 
 // Map a parcels.db row to the raw DOR field names the farm loop reads, so the
 // existing scoring/formatting runs unchanged on index-sourced candidates.
 const flFarmRow = row => ({
   DOR_UC: row.land_use, PHY_ADDR1: row.situs_addr, PHY_CITY: row.city, PHY_ZIPCD: row.situs_zip,
+  CO_NO: row.co_no,
   OWN_NAME: row.owner1, OWN_ADDR1: row.mail_addr, OWN_CITY: row.mail_city,
   OWN_STATE: row.mail_state, OWN_ZIPCD: row.mail_zip,
   JV: row.total_val, AV_HMSTD: row.av_hmstd,
@@ -33,7 +35,9 @@ const flFarmRow = row => ({
   NO_BULDNG: row.bldg_count, NO_RES_UNT: row.unit_count,
 });
 
-export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [], limit = 50, minScore = 0 }) {
+export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [], limit = 50, minScore = 0, minAcres = 0, minValue = 0 }) {
+  const minAcresNum = parseFloat(minAcres) || 0;
+  const minValueNum = parseFloat(minValue) || 0;
   // ZIP code search — find matching city file(s) and filter by ZIP
   const filterZip = zip ? String(zip).trim() : '';
 
@@ -109,6 +113,13 @@ export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [],
     const name = (p.OWN_NAME || '').toUpperCase();
     if (EXCLUDE.some(e => name.includes(e))) continue;
 
+    // Acreage / value floors (lot size is in sqft; 43,560 sqft = 1 acre).
+    if (minValueNum > 0 && (parseInt(p.JV) || 0) < minValueNum) continue;
+    if (minAcresNum > 0) {
+      const acres = (parseInt(p.LND_SQFOOT) || 0) / 43560;
+      if (acres < minAcresNum) continue;
+    }
+
     let score = 0;
     const reasons = [];
     const ownAddr = (p.OWN_ADDR1 || '').trim().toUpperCase();
@@ -127,9 +138,11 @@ export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [],
     if (hmstd === 0) { score += 5; reasons.push('No homestead'); }
     if (jv > 0 && sp > 1000 && jv > sp * 2) { score += 6; reasons.push('High equity'); }
 
-    // Clerk signals
+    // Clerk signals — Broward-only corpus, so attach ONLY to Broward parcels.
+    // Name-matching statewide put Broward foreclosure/lien cases onto same-named
+    // owners in other counties (e.g. Ocala), falsely flagging them as distressed.
     let clerkHits = [];
-    if (db && name.length >= 3) {
+    if (db && name.length >= 3 && isBrowardParcel(p.CO_NO, p.PHY_CITY)) {
       const norm = name.replace(/[,.\s]+/g, ' ').trim();
       try {
         const rows = _clerkStmts.byName?.all(norm) || [];
@@ -234,7 +247,7 @@ export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [],
   const result = prospects.slice(0, limit);
 
   return {
-    query: { city: cityUp, lat, lng, radius, signals: [...signalSet], minScore, limit },
+    query: { city: cityUp, lat, lng, radius, signals: [...signalSet], minScore, minAcres: minAcresNum, minValue: minValueNum, limit },
     total: prospects.length,
     returned: result.length,
     summary: {
@@ -246,7 +259,7 @@ export function farmingSearch({ city, zip, lat, lng, radius = 1.0, signals = [],
     prospects: result,
     source: {
       parcels: 'FL Department of Revenue (statewide)',
-      courtRecords: 'Broward County Clerk of Courts (SFTP bulk)',
+      courtRecords: 'Broward County Clerk of Courts (SFTP bulk) — attached to Broward parcels ONLY',
       coverage: '2024-2026 court filings (daily SFTP) + current DOR parcel data',
       provenance: 'Government source data with cryptographic hashing'
     }

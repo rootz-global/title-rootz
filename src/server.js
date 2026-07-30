@@ -312,9 +312,11 @@ async function handleRequest(req, res) {
       const signals = params.get('signals')?.split(',').filter(Boolean) || [];
       const limit = parseInt(params.get('limit') || '50');
       const minScore = parseInt(params.get('minScore') || '0');
+      const minAcres = parseFloat(params.get('minAcres') || '0');
+      const minValue = parseFloat(params.get('minValue') || '0');
       const format = params.get('format');
       if (!city && !zip) return json(res, { error: 'city or zip parameter required' }, 400);
-      const results = farmingSearch({ city, zip, signals, limit, minScore });
+      const results = farmingSearch({ city, zip, signals, limit, minScore, minAcres, minValue });
       if (format === 'csv') {
         const csvData = results.prospects || results.properties || results;
         res.writeHead(200, { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="farming.csv"' });

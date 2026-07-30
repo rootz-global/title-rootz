@@ -80,6 +80,49 @@ export const SSL_CERTS = {
   }
 };
 
+// ─── FL DOR County Codes (CO_NO) ─────────────────────────────────
+// The statewide DOR parcel export tags every parcel with CO_NO, the standard
+// Florida DOR county number (11=Alachua … 77=Washington, alphabetical, with
+// Miami-Dade as 23/"Dade"). This is the AUTHORITATIVE county for a parcel — the
+// city-indexed files are keyed by PHY_CITY string and a single city name can
+// span counties, so never infer county from the file name. Used to stamp the
+// correct county into the signed origin record instead of assuming Miami-Dade.
+export const FL_COUNTIES = {
+  11: 'Alachua', 12: 'Baker', 13: 'Bay', 14: 'Bradford', 15: 'Brevard',
+  16: 'Broward', 17: 'Calhoun', 18: 'Charlotte', 19: 'Citrus', 20: 'Clay',
+  21: 'Collier', 22: 'Columbia', 23: 'Miami-Dade', 24: 'DeSoto', 25: 'Dixie',
+  26: 'Duval', 27: 'Escambia', 28: 'Flagler', 29: 'Franklin', 30: 'Gadsden',
+  31: 'Gilchrist', 32: 'Glades', 33: 'Gulf', 34: 'Hamilton', 35: 'Hardee',
+  36: 'Hendry', 37: 'Hernando', 38: 'Highlands', 39: 'Hillsborough', 40: 'Holmes',
+  41: 'Indian River', 42: 'Jackson', 43: 'Jefferson', 44: 'Lafayette', 45: 'Lake',
+  46: 'Lee', 47: 'Leon', 48: 'Levy', 49: 'Liberty', 50: 'Madison',
+  51: 'Manatee', 52: 'Marion', 53: 'Martin', 54: 'Monroe', 55: 'Nassau',
+  56: 'Okaloosa', 57: 'Okeechobee', 58: 'Orange', 59: 'Osceola', 60: 'Palm Beach',
+  61: 'Pasco', 62: 'Pinellas', 63: 'Polk', 64: 'Putnam', 65: 'St. Johns',
+  66: 'St. Lucie', 67: 'Santa Rosa', 68: 'Sarasota', 69: 'Seminole', 70: 'Sumter',
+  71: 'Suwannee', 72: 'Taylor', 73: 'Union', 74: 'Volusia', 75: 'Wakulla',
+  76: 'Walton', 77: 'Washington',
+};
+// County name for a CO_NO (accepts number or string); null if unknown.
+export function flCountyName(coNo) {
+  if (coNo === null || coNo === undefined || coNo === '') return null;
+  return FL_COUNTIES[parseInt(coNo, 10)] || null;
+}
+
+// Broward city fallback — only consulted when a parcel has no CO_NO (e.g. a
+// record fetched from MDC GIS rather than the DOR export).
+export const BROWARD_CITIES = /^(FORT LAUDERDALE|HOLLYWOOD|PEMBROKE PINES|CORAL SPRINGS|MIRAMAR|POMPANO BEACH|DAVIE|PLANTATION|SUNRISE|DEERFIELD BEACH|LAUDERHILL|TAMARAC|WESTON|COCONUT CREEK|MARGATE|LAUDERDALE LAKES|OAKLAND PARK|WILTON MANORS|HALLANDALE|DANIA|COOPER CITY|PARKLAND|SOUTHWEST RANCHES|LIGHTHOUSE POINT|LAZY LAKE|SEA RANCH LAKES|WEST PARK|HILLSBORO BEACH|PEMBROKE PARK)\b/;
+// The Broward Clerk corpus is Broward-only. A court/distress signal may ONLY be
+// attached to a parcel that is physically in Broward County (CO_NO 16) —
+// matching by owner name alone smears Broward filings onto same-named owners
+// statewide, which is how Broward foreclosure cases ended up on Ocala homes.
+export function isBrowardParcel(coNo, city = '') {
+  if (coNo !== null && coNo !== undefined && coNo !== '') {
+    return parseInt(coNo, 10) === 16;          // authoritative when present
+  }
+  return BROWARD_CITIES.test(String(city).toUpperCase());  // fallback only
+}
+
 // ─── DOR Use Code Descriptions ───────────────────────────────────
 export const DOR_CODES = {
   '000': 'Vacant Residential', '001': 'Single Family', '002': 'Mobile Home',
