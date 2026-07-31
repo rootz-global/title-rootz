@@ -1,8 +1,43 @@
 # Plan: Title Wallet — Integration, Testing, Deployment & Operations
 
 **Date:** April 26, 2026 (v2 — mainnet-only, dashboard-first, custodian wallet)
-**Status:** Planning
+**Status:** Planning — with the **public-layer bridge now built** (see Build Log)
 **Depends on:** DESIGN-title-wallet-v6.md (v2)
+
+---
+
+## Build Log
+
+### 2026-07-30 — Property Passport (KV-PUBLIC public layer) — BUILT & LIVE
+
+**Reconciliation with reality:** since this plan was written, title.rootz.global
+shipped as the property-*intelligence* engine (FL/OH/NC/MA parcels, farming,
+court records, and a signed origin/provenance record per property). That created
+**two identities for the same property** — the engine's origin record
+(`FL-MARION-…`, sourced + hashed) and this plan's on-chain Property Secret — that
+didn't reference each other. The bridge: **the intelligence engine produces the
+KV-PUBLIC content the Property Secret anchors.**
+
+Built `src/query/fl-passport.js` + `GET /api/fl/passport?address=&city=` (also
+`?folio=` for Miami-Dade). A passport is the verifiable, anchorable PUBLIC record:
+- canonical `propertyId` (county-correct, from CO_NO) + a deterministic
+  `contentHash` — the digest a Property Secret pins as its KV-PUBLIC note; same
+  public facts → same hash, so an anchored record re-verifies against the county.
+- `chainOfTitle` from DOR sale records (all counties; deed OR book/page refs).
+- `encumbrances` (Broward recorded instruments) — each flagged
+  `verified: confirmed|name_match`. **Only parcel-confirmed encumbrances enter
+  the content hash**; name matches surface as advisory but never commit on-chain.
+- `completeness` score + `anchorable` flag (min bar: real parcel + owner +
+  county) + a `walletBridge` block telling the wallet layer what to pin.
+
+Verified live: Ocala/Marion → clean chain, 0 false Broward encumbrances,
+anchorable; Fort Lauderdale/Broward → 4 encumbrances all correctly advisory
+(name_match), excluded from the hash; contentHash deterministic across calls.
+
+**Still open from this plan (unchanged):** custodian wallet service + dashboard
+API/frontend (steps 3–5, need rootz-v6 + mainnet); resolve the domain collision
+(intelligence engine currently owns title.rootz.global). Next enrichment for the
+passport: pull grantor/grantee + all-county recorded deeds into chainOfTitle.
 
 ---
 
