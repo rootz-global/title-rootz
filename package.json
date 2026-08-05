@@ -10,10 +10,13 @@
     "check": "node --check src/server.js",
     "harvest": "node ingest/harvester.js",
     "harvest:test": "node ingest/harvester.js --recipe fl-permits-miami-dade --test",
-    "harvest:status": "node ingest/harvester.js --status"
+    "harvest:status": "node ingest/harvester.js --status",
+    "harvest:datasource": "node datasource/run-harvest.mjs",
+    "test:datasource": "node --test datasource/*.test.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@epistery/datasource": "^0.1.0",
     "better-sqlite3": "^11.10.0",
     "jose": "^5.10.0",
     "stripe": "^17.7.0"

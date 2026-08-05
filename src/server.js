@@ -34,6 +34,7 @@ import { parseCookies, requireAuth, createAccount, getAccountByEmail, createMagi
 import { sendMagicLink } from './email.js';
 import { initStripeProducts, createCheckoutSession, createPortalSession, handleStripeWebhook, verifyWebhookSignature } from './stripe.js';
 import db from './db.js';
+import { handleDatasource } from '../datasource/mount.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3035;
@@ -130,6 +131,12 @@ async function handleRequest(req, res) {
   }
 
   try {
+    // ─── Epistery datasource ─────────────────────────
+    // Signed JSON-LD catalog for epistery-scan. GET-only and additive: owns
+    // /api/catalog, /api/record/*, /api/catalog/search, /api/datasource/status,
+    // and /.well-known/ai/skill.json. Every route below is untouched.
+    if (await handleDatasource(req, res, urlParsed)) return;
+
     // ─── Auth Routes ─────────────────────────────────
     if (path_ === '/auth/login' && method === 'GET') {
       return html(res, renderAuthLoginPage());
