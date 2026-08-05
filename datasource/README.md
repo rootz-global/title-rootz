@@ -107,11 +107,17 @@ the category maps.
 
 ## Roadmap (staged so each step is reviewable and lossless)
 
-- **PR 1 (this)** — the signed catalog for FL parcels + Broward instruments.
-- **PR 2** — retire the second server (`mcp-server/server.mjs`); the data tools
-  come from the epistery MCP facility, the value-add tools (cross-ref, fraud,
-  chain-of-title) are declared through it. Ends the two-server drift.
-- **PR 3** — remaining collections (OH/NC parcels, DBPR rentals, overlays);
-  `harvest()` scheduling replacing the `pull-*` crons; retire `parcels.db` in
-  favour of the substrate store.
-- **PR 4 (deploy)** — domain wallet, cutover, scan registration, ingest.
+- **PR 1** — the signed catalog for FL parcels + Broward instruments.
+- **PR 2** — restore `/mcp` on the live server through the epistery MCP facility:
+  the generic catalog tools plus the live value-add tools (property intelligence,
+  passport, farming, OH, NC). `/mcp` was **advertised but served by nobody** — the
+  old `mcp-server/server.mjs` is not running (`/mcp` and `/api/party` are 404 in
+  production), so the MCP surface was dark. This lights it back up.
+- **PR 3** — retire the dead `mcp-server/server.mjs`; port its **dark-only** tools
+  (cross-ref to private/origin, MA fraud/party/notary) into live modules and
+  declare them through the facility. Then the remaining collections (OH/NC parcels,
+  DBPR rentals, overlays), `harvest()` scheduling replacing the `pull-*` crons, and
+  retiring `parcels.db` in favour of the substrate store.
+- **PR 4 (deploy)** — under the **new rootz OCI tenancy** (see RootzOracleTenancy),
+  not the legacy metric-im box: mint the domain wallet, cut over, register
+  `[datasources.title]` on scan, ingest. Deploy is git-pull discipline, Michael's.
