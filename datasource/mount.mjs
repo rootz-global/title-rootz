@@ -25,9 +25,10 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  openStore, createCatalog, buildManifests, buildTools, runHarvest
+  openStore, createCatalog, buildManifests, buildTools, buildHandlers, runHarvest
 } from '@epistery/datasource';
 import source from './source.mjs';
+import { valueAddTools, valueAddHandlers } from './mcp.mjs';
 import { DATA_DIR } from '../src/lib/config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -142,6 +143,55 @@ export async function handleDatasource(req, res, urlParsed) {
   }
 
   return false;
+}
+
+// ── MCP over the epistery facility ──────────────────────────────────────────
+// Generic catalog tools (search/get/status) come from the substrate's own
+// generators; the value-add tools are declared alongside and wired to the LIVE
+// query modules. One /mcp for title-rootz, built from the facility — not a
+// second hand-rolled transport.
+
+function mcpTools() {
+  return [...buildTools(source), ...valueAddTools];
+}
+function mcpHandlers() {
+  const { catalog } = ctx();
+  return { ...buildHandlers(source, { catalog, status: statusReport }), ...valueAddHandlers };
+}
+
+function rpc(res, id, result) {
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, result }));
+}
+function rpcError(res, id, code, message) {
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify({ jsonrpc: '2.0', id: id ?? null, error: { code, message } }));
+}
+
+/** Serve one MCP JSON-RPC request. `body` is the already-parsed request. */
+export async function handleMcp(req, res, body = {}) {
+  const { method, params, id } = body;
+  if (method === 'initialize') {
+    return rpc(res, id, {
+      protocolVersion: '2024-11-05',
+      serverInfo: { name: 'title-rootz', version: VERSION },
+      capabilities: { tools: {} }
+    });
+  }
+  if (method === 'notifications/initialized') { res.writeHead(202); return res.end(); }
+  if (method === 'tools/list') return rpc(res, id, { tools: mcpTools() });
+  if (method === 'tools/call') {
+    const { name, arguments: args } = params || {};
+    const handler = mcpHandlers()[name];
+    if (!handler) return rpcError(res, id, -32601, `Unknown tool: ${name}`);
+    try {
+      const result = await handler(args || {});
+      return rpc(res, id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+    } catch (err) {
+      return rpcError(res, id, -32603, err.message);
+    }
+  }
+  return rpcError(res, id, -32601, `Unknown method: ${method}`);
 }
 
 /** CLI/one-shot harvest — reads the government inputs into the substrate store. */
