@@ -12,11 +12,41 @@
  * implementation to bind to; they are a deliberate restore (a later PR that
  * ports that logic out of the retired server), not a silent drop.
  */
-import { assemblePropertyIntelligence } from '../src/query/fl-property.js';
+import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio } from '../src/query/fl-property.js';
 import { buildPropertyPassport } from '../src/query/fl-passport.js';
 import { farmingSearch } from '../src/query/fl-farming.js';
 import { assembleOhioPropertyIntelligence } from '../src/query/oh-property.js';
 import { assembleNCPropertyIntelligence, farmNC } from '../src/query/nc-property.js';
+import { isEntityOwner, crossRefPrivateEntity, crossRefPublicEntity, crossRefOwnerIntel } from '../src/query/cross-ref.js';
+
+// Resolve the owner to cross-reference: an explicit name, or the owner of a
+// property found by address/folio (via the LIVE fl-property lookups). Returns
+// { ownerName, propertyData } — the same resolution the retired mcp-server used.
+async function resolveOwner({ owner, address, city, folio }) {
+  if (owner) return { ownerName: owner, propertyData: null };
+  if (!address && !folio) return { ownerName: null, propertyData: null };
+  const props = folio ? [await lookupByFolio(folio)].filter(Boolean) : (await lookupByAddress(address, city || '') || []);
+  if (!props.length) return { ownerName: null, propertyData: null };
+  const p = props[0];
+  return {
+    ownerName: p.TRUE_OWNER1,
+    propertyData: {
+      address: p.TRUE_SITE_ADDR, city: p.TRUE_SITE_CITY, zip: p.TRUE_SITE_ZIP_CODE,
+      folio: p.FOLIO, owner1: p.TRUE_OWNER1, owner2: p.TRUE_OWNER2,
+      value: p.TOTAL_VAL_CUR, year_built: p.YEAR_BUILT
+    }
+  };
+}
+
+const OWNER_INPUT = {
+  type: 'object',
+  properties: {
+    owner: { type: 'string', description: 'Owner name to analyze' },
+    address: { type: 'string', description: 'Or a property address whose owner to analyze' },
+    city: { type: 'string' },
+    folio: { type: 'string', description: 'Or a folio/parcel id' }
+  }
+};
 
 /** Value-add tool declarations — the product surface, as agent tools. */
 export const valueAddTools = [
@@ -98,6 +128,30 @@ export const valueAddTools = [
         limit: { type: 'number' }
       }
     }
+  },
+  {
+    name: 'cross_ref_entity',
+    description:
+      'Unmask an LLC/entity property owner: cross-reference the owner name against the ' +
+      'Florida business registry (private.rootz.global) for officers, filing date, ' +
+      'registered agent, and a succession signal. Give an owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
+  },
+  {
+    name: 'cross_ref_public',
+    description:
+      'Detect an institutional owner: cross-reference the owner name against SEC public ' +
+      'companies (origin.rootz.global) to identify a public company or REIT. ' +
+      'Give an owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
+  },
+  {
+    name: 'cross_ref_owner_intel',
+    description:
+      'Combined owner intelligence: runs the private (entity) and public (SEC) joins and ' +
+      'classifies the owner as individual / private_entity / owner_operated / public_company / ' +
+      'public_reit, with succession risk and officers where known. Owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
   }
 ];
 
@@ -115,5 +169,39 @@ export const valueAddHandlers = {
     county: a.county || '', signals: a.signals || '', town: a.town || a.city || '',
     minScore: a.minScore, minValue: a.minValue, maxValue: a.maxValue,
     minAcres: a.minAcres, limit: a.limit
-  })
+  }),
+
+  cross_ref_entity: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    const isEntity = isEntityOwner(ownerName);
+    const entityMatch = await crossRefPrivateEntity(ownerName, 'FL');
+    let entityMatch2 = null;
+    const owner2 = propertyData?.owner2;
+    if (owner2 && isEntityOwner(owner2) && owner2 !== ownerName) {
+      entityMatch2 = await crossRefPrivateEntity(owner2, 'FL');
+    }
+    return {
+      property: propertyData, owner_analyzed: ownerName, is_entity: isEntity,
+      entity_match: entityMatch, owner2_analyzed: owner2 || null, entity_match2: entityMatch2,
+      join: 'title.rootz.global ↔ private.rootz.global'
+    };
+  },
+  cross_ref_public: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    const match = await crossRefPublicEntity(ownerName);
+    return {
+      property: propertyData, owner_analyzed: ownerName,
+      public_company_match: match, is_reit: match?.is_reit || false,
+      join: 'title.rootz.global ↔ origin.rootz.global'
+    };
+  },
+  // The live cross-ref module already owns the combined classification, so this
+  // uses it directly rather than re-deriving what the retired server did inline.
+  cross_ref_owner_intel: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    return crossRefOwnerIntel(ownerName, propertyData?.owner2 || '');
+  }
 };
