@@ -63,9 +63,9 @@ test('parcels.map projects the canonical Parcel shape with provenance and hash',
   assert.equal(o.homestead, false);
   assert.equal(o.chainOfTitle[0].deedReference, 'OR Book 48000, Page 123');
   assert.match(o.contentHash, /^sha256:[0-9a-f]{64}$/);
-  assert.deepEqual(o.provenance.sources, ['FL Department of Revenue (statewide parcel + sales export)']);
-  // The map MUST NOT stamp a top-level `source`; the substrate applies the
-  // declared upstream and refuses any object that claims a different one.
+  assert.ok(o.provenance.note.length > 0);
+  // map() does NOT stamp `source`; the substrate stamps this collection's origin
+  // (FL DOR) and refuses any object claiming an origin the source didn't declare.
   assert.equal(o.source, undefined);
 });
 
@@ -99,6 +99,6 @@ test('encumbrances.id and map carry the recorded instrument with party roles', (
   assert.equal(o.parcelId, '514212070260');
   assert.equal(o.parties[0].role, 'grantor');
   assert.equal(o.parties[1].role, 'grantee');
-  assert.deepEqual(o.provenance.sources, ['Broward County Clerk of Courts (SFTP bulk)']);
+  assert.ok(o.provenance.note.length > 0);
   assert.equal(o.source, undefined);
 });

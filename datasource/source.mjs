@@ -67,12 +67,14 @@ export default defineSource({
     'instruments (liens, lis pendens, judgments, mortgages, satisfactions) that ' +
     'sit on a property. Each object names the government source it came from and ' +
     'carries a content hash so it can be re-verified against that source.',
-  // One honest umbrella upstream; each object names its specific origin in the
-  // body (provenance.sources). The substrate stamps this on every object as
-  // `source`, and refuses any object that tries to claim a different one.
-  upstream:
-    'US county public property records — Florida Dept. of Revenue (parcels & sales) ' +
-    'and county Clerks of Court (recorded instruments)',
+  // Each object names its OWN true origin — the mission, never a gatherer
+  // umbrella. Parcels are FL DOR; recorded instruments are the Broward Clerk.
+  // The collections below say which each carries; the substrate stamps it as the
+  // object's `source` and refuses anything claiming an origin not in this set.
+  upstream: [
+    'FL Department of Revenue (statewide parcel + sales export)',
+    'Broward County Clerk of Courts (SFTP bulk)'
+  ],
   role: 'harvest',
   notes: {
     vintage: 'Parcels track the annual FL DOR NAL export; Broward instruments are pulled from the county Clerk SFTP.',
@@ -83,6 +85,7 @@ export default defineSource({
     {
       name: 'parcels',
       type: 'https://epistery.com/schema/Parcel',
+      upstream: 'FL Department of Revenue (statewide parcel + sales export)',
       // Period/roll identity is the parcel id within its county. Stable across
       // harvests; a parcel that loses its id is rejected, never stored under a
       // made-up one.
@@ -166,11 +169,10 @@ export default defineSource({
           outOfState: Boolean(ownState && ownState !== 'FL' && ownState !== 'FLORIDA'),
           chainOfTitle: chain,
 
-          // The origin evidence we FOUND — not a trust claim we make. Naming the
-          // upstream and (where known) how the record was authenticated is the
-          // honest part; a consumer verifies at the origin, where trust is real.
+          // The object's `source` (stamped by the substrate from the collection's
+          // origin) names WHERE this came from; this note says what the signature
+          // does and does not cover. A consumer verifies at the origin.
           provenance: {
-            sources: ['FL Department of Revenue (statewide parcel + sales export)'],
             note:
               'Harvested public-record data, stored as the county source gave it. ' +
               'contentHash is the re-verification digest, not an assertion of correctness.'
@@ -182,6 +184,7 @@ export default defineSource({
     {
       name: 'encumbrances',
       type: 'https://epistery.com/schema/RecordedInstrument',
+      upstream: 'Broward County Clerk of Courts (SFTP bulk)',
       id: (r) => (r.instrument_num ? `instrument:broward:${r.instrument_num}` : null),
       keys: (r) => ({
         parcelId: r.parcel_id || '',
@@ -208,7 +211,6 @@ export default defineSource({
           : [],
         recordHash: r.hash || null,
         provenance: {
-          sources: ['Broward County Clerk of Courts (SFTP bulk)'],
           note: 'A publicly recorded instrument, carried as recorded. Party matching to a parcel is reported, not asserted.'
         }
       })
