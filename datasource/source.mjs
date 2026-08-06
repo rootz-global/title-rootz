@@ -128,38 +128,44 @@ export default defineSource({
           'sha256:' + crypto.createHash('sha256').update(JSON.stringify(facts)).digest('hex');
 
         return {
-          propertyId: facts.propertyId,
-          address: r.PHY_ADDR1 || null,
-          city: keys.city || null,
+          // Canonical Parcel fields — https://epistery.com/schema/Parcel. The @id
+          // (parcel:FL:<county>:<parcelId>) is stamped by the substrate.
+          parcelId: keys.folio || null,
+          name: phyAddr ? `${r.PHY_ADDR1}${keys.city ? ', ' + keys.city : ''}` : null,
+          owner: [r.OWN_NAME, r.FIDU_NAME].filter(Boolean).join(' & ') || null,
+          address: {
+            streetAddress: r.PHY_ADDR1 || null,
+            addressLocality: keys.city || null,
+            addressRegion: 'FL',
+            postalCode: keys.zip || null
+          },
           county: keys.county || null,
           state: 'FL',
-          zip: keys.zip || null,
-          folio: keys.folio || null,
-          owner: {
-            name1: r.OWN_NAME || null,
-            name2: r.FIDU_NAME || null,
-            mailingAddress: ownMailAddr || null,
-            mailingCity: r.OWN_CITY || null,
-            mailingState: r.OWN_STATE || null,
-            mailingZip: r.OWN_ZIPCD ? String(r.OWN_ZIPCD) : null,
-            absentee: Boolean(ownMailAddr && phyAddr && ownMailAddr !== phyAddr),
-            outOfState: Boolean(ownState && ownState !== 'FL' && ownState !== 'FLORIDA')
-          },
-          landUseCode: dor || null,
-          landUse: DOR_CODES[dor] || null,
+          useCode: dor || null,
+          useDescription: DOR_CODES[dor] || null,
+          marketValue: jv || null,
+          landValue: landVal || null,
           yearBuilt: int(r.EFF_YR_BLT) || int(r.ACT_YR_BLT) || null,
           livingArea: int(r.TOT_LVG_AR) || null,
+          contentHash,
+
+          // Extensions beyond the base Parcel type — title-rootz's own signals,
+          // carried alongside the canonical fields (the type permits extras):
+          buildingValue: jv ? jv - landVal : null,
+          homestead: int(r.JV_HMSTD) > 0,
           lotSqft: int(r.LND_SQFOOT) || null,
           buildingCount: int(r.NO_BULDNG) || null,
           unitCount: int(r.NO_RES_UNT) || null,
-          assessment: {
-            justValue: jv || null,
-            landValue: landVal || null,
-            buildingValue: jv ? jv - landVal : null,
-            homestead: int(r.JV_HMSTD) > 0
+          ownerMailing: {
+            streetAddress: ownMailAddr || null,
+            addressLocality: r.OWN_CITY || null,
+            addressRegion: r.OWN_STATE || null,
+            postalCode: r.OWN_ZIPCD ? String(r.OWN_ZIPCD) : null
           },
+          absentee: Boolean(ownMailAddr && phyAddr && ownMailAddr !== phyAddr),
+          outOfState: Boolean(ownState && ownState !== 'FL' && ownState !== 'FLORIDA'),
           chainOfTitle: chain,
-          contentHash,
+
           // The origin evidence we FOUND — not a trust claim we make. Naming the
           // upstream and (where known) how the record was authenticated is the
           // honest part; a consumer verifies at the origin, where trust is real.

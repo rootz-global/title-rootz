@@ -42,16 +42,25 @@ test('parcels.keys lifts the searchable scalars', () => {
   assert.equal(k.county, 'Broward');
 });
 
-test('parcels.map projects JSON-LD with provenance and a re-verification hash', () => {
+test('parcels.map projects the canonical Parcel shape with provenance and hash', () => {
   const o = parcels.map(NAL, parcels.keys(NAL));
-  assert.equal(o.propertyId, 'FL-BROWARD-514212070260');
+  // Canonical fields (must match https://epistery.com/schema/Parcel)
+  assert.equal(o.parcelId, '514212070260');
+  assert.equal(o.name, '1801 SE 17TH ST, FORT LAUDERDALE');
+  assert.equal(o.owner, 'SEASIDE HOLDINGS LLC');          // a string, not an object
+  assert.equal(o.address.streetAddress, '1801 SE 17TH ST');
+  assert.equal(o.address.addressLocality, 'FORT LAUDERDALE');
+  assert.equal(o.address.postalCode, '33316');
   assert.equal(o.county, 'Broward');
-  assert.equal(o.owner.absentee, true);      // mailing addr != site addr
-  assert.equal(o.owner.outOfState, true);    // OWN_STATE = NY
-  assert.equal(o.assessment.justValue, 850000);
-  assert.equal(o.assessment.buildingValue, 550000);
-  assert.equal(o.assessment.homestead, false);
-  assert.equal(o.landUse, DOR_LABEL(o.landUseCode)); // label resolved from code
+  assert.equal(o.state, 'FL');
+  assert.equal(o.marketValue, 850000);
+  assert.equal(o.landValue, 300000);
+  assert.equal(o.useDescription, DOR_LABEL(o.useCode));   // label resolved from code
+  // Extensions carried alongside the canonical fields
+  assert.equal(o.absentee, true);      // mailing addr != site addr
+  assert.equal(o.outOfState, true);    // OWN_STATE = NY
+  assert.equal(o.buildingValue, 550000);
+  assert.equal(o.homestead, false);
   assert.equal(o.chainOfTitle[0].deedReference, 'OR Book 48000, Page 123');
   assert.match(o.contentHash, /^sha256:[0-9a-f]{64}$/);
   assert.deepEqual(o.provenance.sources, ['FL Department of Revenue (statewide parcel + sales export)']);
@@ -69,7 +78,7 @@ test('parcels.map contentHash is deterministic for the same facts', () => {
 // Helper: the label the map resolves from the DOR code, to keep the assertion
 // above from hard-coding the vocabulary table.
 function DOR_LABEL(code) {
-  return parcels.map({ ...NAL, DOR_UC: code }, parcels.keys(NAL)).landUse;
+  return parcels.map({ ...NAL, DOR_UC: code }, parcels.keys(NAL)).useDescription;
 }
 
 const SIGNAL = {
