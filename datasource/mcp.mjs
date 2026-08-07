@@ -12,11 +12,45 @@
  * implementation to bind to; they are a deliberate restore (a later PR that
  * ports that logic out of the retired server), not a silent drop.
  */
-import { assemblePropertyIntelligence } from '../src/query/fl-property.js';
+import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio } from '../src/query/fl-property.js';
 import { buildPropertyPassport } from '../src/query/fl-passport.js';
 import { farmingSearch } from '../src/query/fl-farming.js';
 import { assembleOhioPropertyIntelligence } from '../src/query/oh-property.js';
 import { assembleNCPropertyIntelligence, farmNC } from '../src/query/nc-property.js';
+import { isEntityOwner, crossRefPrivateEntity, crossRefPublicEntity, crossRefOwnerIntel } from '../src/query/cross-ref.js';
+import {
+  maSearchProperty, maChainOfTitle, maCheckLiens, maGetDocument, maAssessorData,
+  maListProperties, maSearchByParty, maDetectFraud, maSearchByNotary
+} from '../src/query/ma-registry.js';
+
+// Resolve the owner to cross-reference: an explicit name, or the owner of a
+// property found by address/folio (via the LIVE fl-property lookups). Returns
+// { ownerName, propertyData } — the same resolution the retired mcp-server used.
+async function resolveOwner({ owner, address, city, folio }) {
+  if (owner) return { ownerName: owner, propertyData: null };
+  if (!address && !folio) return { ownerName: null, propertyData: null };
+  const props = folio ? [await lookupByFolio(folio)].filter(Boolean) : (await lookupByAddress(address, city || '') || []);
+  if (!props.length) return { ownerName: null, propertyData: null };
+  const p = props[0];
+  return {
+    ownerName: p.TRUE_OWNER1,
+    propertyData: {
+      address: p.TRUE_SITE_ADDR, city: p.TRUE_SITE_CITY, zip: p.TRUE_SITE_ZIP_CODE,
+      folio: p.FOLIO, owner1: p.TRUE_OWNER1, owner2: p.TRUE_OWNER2,
+      value: p.TOTAL_VAL_CUR, year_built: p.YEAR_BUILT
+    }
+  };
+}
+
+const OWNER_INPUT = {
+  type: 'object',
+  properties: {
+    owner: { type: 'string', description: 'Owner name to analyze' },
+    address: { type: 'string', description: 'Or a property address whose owner to analyze' },
+    city: { type: 'string' },
+    folio: { type: 'string', description: 'Or a folio/parcel id' }
+  }
+};
 
 /** Value-add tool declarations — the product surface, as agent tools. */
 export const valueAddTools = [
@@ -98,7 +132,46 @@ export const valueAddTools = [
         limit: { type: 'number' }
       }
     }
-  }
+  },
+  {
+    name: 'cross_ref_entity',
+    description:
+      'Unmask an LLC/entity property owner: cross-reference the owner name against the ' +
+      'Florida business registry (private.rootz.global) for officers, filing date, ' +
+      'registered agent, and a succession signal. Give an owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
+  },
+  {
+    name: 'cross_ref_public',
+    description:
+      'Detect an institutional owner: cross-reference the owner name against SEC public ' +
+      'companies (origin.rootz.global) to identify a public company or REIT. ' +
+      'Give an owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
+  },
+  {
+    name: 'cross_ref_owner_intel',
+    description:
+      'Combined owner intelligence: runs the private (entity) and public (SEC) joins and ' +
+      'classifies the owner as individual / private_entity / owner_operated / public_company / ' +
+      'public_reit, with succession risk and officers where known. Owner name, or an address/folio.',
+    inputSchema: OWNER_INPUT
+  },
+
+  // Massachusetts registry-of-deeds tools, over MassGIS + masslandrecords.com records.
+  {
+    name: 'ma_property',
+    description: 'Massachusetts property intelligence for an address+town: MassGIS assessor, recorded deed chain of title, lien analysis, and (depth 2) the document graph.',
+    inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' }, depth: { type: 'number', default: 2 } }, required: ['address', 'town'] }
+  },
+  { name: 'ma_chain_of_title', description: 'Ownership history (chain of title) for a Massachusetts property from its recorded deeds.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_check_liens', description: 'Active vs. discharged encumbrances (mortgages, tax takings, execution judgments) for a Massachusetts property.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_get_document', description: 'Fetch a recorded Massachusetts document by book/page (e.g. "12345/678") from the cached registry records.', inputSchema: { type: 'object', properties: { bookPage: { type: 'string' }, registry: { type: 'string', default: 'BerkMiddle' } }, required: ['bookPage'] } },
+  { name: 'ma_assessor_data', description: 'Live MassGIS assessor parcel attributes (assessed value, lot size, year built, zoning) for a Massachusetts address.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_list_properties', description: 'List the Massachusetts properties currently in the registry cache.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'ma_search_by_party', description: 'Cross-property search by person or entity name across Massachusetts registry records; role = grantor | grantee | both.', inputSchema: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['grantor', 'grantee', 'both'], default: 'both' } }, required: ['name'] } },
+  { name: 'ma_detect_fraud', description: 'Detect title-fraud patterns for a Massachusetts property (orphan deeds, phantom discharges, rapid transfers, POA deeds, $0 consideration, tax takings).', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_search_by_notary', description: 'Search Massachusetts registry records for a notary name (Phase-2 OCR path; currently matches notary names present in extracted record text).', inputSchema: { type: 'object', properties: { notaryName: { type: 'string' } }, required: ['notaryName'] } }
 ];
 
 /** Handlers, wired to the LIVE query modules. Async — several hit live sources. */
@@ -115,5 +188,49 @@ export const valueAddHandlers = {
     county: a.county || '', signals: a.signals || '', town: a.town || a.city || '',
     minScore: a.minScore, minValue: a.minValue, maxValue: a.maxValue,
     minAcres: a.minAcres, limit: a.limit
-  })
+  }),
+
+  cross_ref_entity: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    const isEntity = isEntityOwner(ownerName);
+    const entityMatch = await crossRefPrivateEntity(ownerName, 'FL');
+    let entityMatch2 = null;
+    const owner2 = propertyData?.owner2;
+    if (owner2 && isEntityOwner(owner2) && owner2 !== ownerName) {
+      entityMatch2 = await crossRefPrivateEntity(owner2, 'FL');
+    }
+    return {
+      property: propertyData, owner_analyzed: ownerName, is_entity: isEntity,
+      entity_match: entityMatch, owner2_analyzed: owner2 || null, entity_match2: entityMatch2,
+      join: 'title.rootz.global ↔ private.rootz.global'
+    };
+  },
+  cross_ref_public: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    const match = await crossRefPublicEntity(ownerName);
+    return {
+      property: propertyData, owner_analyzed: ownerName,
+      public_company_match: match, is_reit: match?.is_reit || false,
+      join: 'title.rootz.global ↔ origin.rootz.global'
+    };
+  },
+  // The live cross-ref module already owns the combined classification, so this
+  // uses it directly rather than re-deriving what the retired server did inline.
+  cross_ref_owner_intel: async (a = {}) => {
+    const { ownerName, propertyData } = await resolveOwner(a);
+    if (!ownerName) return { error: 'Provide owner name, address, or folio' };
+    return crossRefOwnerIntel(ownerName, propertyData?.owner2 || '');
+  },
+
+  ma_property: (a = {}) => maSearchProperty(a.address, a.town, a.depth ?? 2),
+  ma_chain_of_title: (a = {}) => maChainOfTitle(a.address, a.town),
+  ma_check_liens: (a = {}) => maCheckLiens(a.address, a.town),
+  ma_get_document: (a = {}) => maGetDocument(a.bookPage, a.registry || 'BerkMiddle'),
+  ma_assessor_data: (a = {}) => maAssessorData(a.address, a.town),
+  ma_list_properties: () => maListProperties(),
+  ma_search_by_party: (a = {}) => maSearchByParty(a.name, a.role || 'both'),
+  ma_detect_fraud: (a = {}) => maDetectFraud(a.address, a.town),
+  ma_search_by_notary: (a = {}) => maSearchByNotary(a.notaryName)
 };
