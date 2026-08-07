@@ -18,6 +18,10 @@ import { farmingSearch } from '../src/query/fl-farming.js';
 import { assembleOhioPropertyIntelligence } from '../src/query/oh-property.js';
 import { assembleNCPropertyIntelligence, farmNC } from '../src/query/nc-property.js';
 import { isEntityOwner, crossRefPrivateEntity, crossRefPublicEntity, crossRefOwnerIntel } from '../src/query/cross-ref.js';
+import {
+  maSearchProperty, maChainOfTitle, maCheckLiens, maGetDocument, maAssessorData,
+  maListProperties, maSearchByParty, maDetectFraud, maSearchByNotary
+} from '../src/query/ma-registry.js';
 
 // Resolve the owner to cross-reference: an explicit name, or the owner of a
 // property found by address/folio (via the LIVE fl-property lookups). Returns
@@ -152,7 +156,22 @@ export const valueAddTools = [
       'classifies the owner as individual / private_entity / owner_operated / public_company / ' +
       'public_reit, with succession risk and officers where known. Owner name, or an address/folio.',
     inputSchema: OWNER_INPUT
-  }
+  },
+
+  // Massachusetts registry-of-deeds tools, over MassGIS + masslandrecords.com records.
+  {
+    name: 'ma_property',
+    description: 'Massachusetts property intelligence for an address+town: MassGIS assessor, recorded deed chain of title, lien analysis, and (depth 2) the document graph.',
+    inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' }, depth: { type: 'number', default: 2 } }, required: ['address', 'town'] }
+  },
+  { name: 'ma_chain_of_title', description: 'Ownership history (chain of title) for a Massachusetts property from its recorded deeds.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_check_liens', description: 'Active vs. discharged encumbrances (mortgages, tax takings, execution judgments) for a Massachusetts property.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_get_document', description: 'Fetch a recorded Massachusetts document by book/page (e.g. "12345/678") from the cached registry records.', inputSchema: { type: 'object', properties: { bookPage: { type: 'string' }, registry: { type: 'string', default: 'BerkMiddle' } }, required: ['bookPage'] } },
+  { name: 'ma_assessor_data', description: 'Live MassGIS assessor parcel attributes (assessed value, lot size, year built, zoning) for a Massachusetts address.', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_list_properties', description: 'List the Massachusetts properties currently in the registry cache.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'ma_search_by_party', description: 'Cross-property search by person or entity name across Massachusetts registry records; role = grantor | grantee | both.', inputSchema: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string', enum: ['grantor', 'grantee', 'both'], default: 'both' } }, required: ['name'] } },
+  { name: 'ma_detect_fraud', description: 'Detect title-fraud patterns for a Massachusetts property (orphan deeds, phantom discharges, rapid transfers, POA deeds, $0 consideration, tax takings).', inputSchema: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } },
+  { name: 'ma_search_by_notary', description: 'Search Massachusetts registry records for a notary name (Phase-2 OCR path; currently matches notary names present in extracted record text).', inputSchema: { type: 'object', properties: { notaryName: { type: 'string' } }, required: ['notaryName'] } }
 ];
 
 /** Handlers, wired to the LIVE query modules. Async — several hit live sources. */
@@ -203,5 +222,15 @@ export const valueAddHandlers = {
     const { ownerName, propertyData } = await resolveOwner(a);
     if (!ownerName) return { error: 'Provide owner name, address, or folio' };
     return crossRefOwnerIntel(ownerName, propertyData?.owner2 || '');
-  }
+  },
+
+  ma_property: (a = {}) => maSearchProperty(a.address, a.town, a.depth ?? 2),
+  ma_chain_of_title: (a = {}) => maChainOfTitle(a.address, a.town),
+  ma_check_liens: (a = {}) => maCheckLiens(a.address, a.town),
+  ma_get_document: (a = {}) => maGetDocument(a.bookPage, a.registry || 'BerkMiddle'),
+  ma_assessor_data: (a = {}) => maAssessorData(a.address, a.town),
+  ma_list_properties: () => maListProperties(),
+  ma_search_by_party: (a = {}) => maSearchByParty(a.name, a.role || 'both'),
+  ma_detect_fraud: (a = {}) => maDetectFraud(a.address, a.town),
+  ma_search_by_notary: (a = {}) => maSearchByNotary(a.notaryName)
 };
