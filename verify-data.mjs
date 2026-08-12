@@ -32,6 +32,33 @@ const GOLDEN = [
   { state: 'MA', label: 'MA Georgetown / Lake Shore',      url: '/api/ma/search?address=105+Lake+Shore+Dr&city=Georgetown',       ownerPresent: true },
 ];
 
+// Coverage tripwire — a query that returns a `total`; flag if it collapses vs the
+// baseline (would catch a state/county's data being wiped, cf. OGRIP Clark). FL farm
+// `total` caps at 8000 (so Hollywood 7999 is a real count; big cities just floor at
+// 8000). NC farm returns true totals. OH has no /api/oh/farm → OH per-county coverage
+// is guarded by the golden queries above until a box-side count probe is added.
+const DROP_PCT = 0.20;  // flag a >20% drop (or zero)
+const COVERAGE = [
+  { state: 'FL', label: 'FL Hollywood count',  url: '/api/fl/farm?city=Hollywood&limit=1', baseline: 7999 },
+  { state: 'NC', label: 'NC Wake count',        url: '/api/nc/farm?county=Wake&limit=1',    baseline: 82636 },
+  { state: 'NC', label: 'NC Chatham signals',   url: '/api/nc/farm?signals=absentee&limit=1', baseline: 11480 },
+];
+const SIMULATE_DROP = process.argv.includes('--simulate-drop');  // self-test: scale totals to prove flagging
+
+async function checkCoverage(c) {
+  let total;
+  try {
+    const r = await fetch(BASE + c.url, { signal: AbortSignal.timeout(30000) });
+    const d = await r.json();
+    total = typeof d.total === 'number' ? d.total : null;
+  } catch (e) { return { ...c, kind: 'coverage', pass: false, detail: `FETCH ERROR: ${e.message}` }; }
+  if (total === null) return { ...c, kind: 'coverage', pass: false, detail: 'no total in response' };
+  if (SIMULATE_DROP) total = Math.floor(total * 0.1);
+  const floor = Math.floor(c.baseline * (1 - DROP_PCT));
+  const pass = total > 0 && total >= floor;
+  return { ...c, kind: 'coverage', pass, detail: pass ? `total ${total} (≥ floor ${floor})` : `total ${total} < floor ${floor} (baseline ${c.baseline}) — COVERAGE DROP` };
+}
+
 // Pull a field from the many shapes the state engines return.
 function extract(d) {
   const p = d.property || d || {};
@@ -65,6 +92,7 @@ async function check(g) {
 
 const results = [];
 for (const g of GOLDEN) results.push(await check(g));
+for (const c of COVERAGE) results.push(await checkCoverage(c));
 
 const failed = results.filter(r => !r.pass);
 if (process.argv.includes('--json')) {
