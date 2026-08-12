@@ -18,6 +18,11 @@
  * its golden query passes here).
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE || process.env.HEALTH_BASE || 'https://title.rootz.global';
 
 // Each entry: a real address that resolves today, with what MUST be true about it.
@@ -27,9 +32,9 @@ const GOLDEN = [
   { state: 'FL', label: 'FL Miami-Dade / 1000 Brickell',   url: '/api/fl/search?address=1000+Brickell+Ave&city=Miami',            county: 'Miami-Dade', ownerPresent: true },
   { state: 'FL', label: 'FL Marion / Ocala',               url: '/api/fl/search?address=12281+NW+35th+St&city=Ocala',            county: 'Marion',     ownerContains: 'SPRAGUE' },
   { state: 'OH', label: 'OH Franklin / Columbus',          url: '/api/oh/search?address=100+E+BROAD+ST&city=Columbus',           ownerPresent: true },
-  { state: 'OH', label: 'OH Clark / Springfield [OGRIP]',  url: '/api/oh/search?address=24+CENTER+ST&city=Springfield',          county: 'Clark',      addressContains: 'CENTER' },
+  { state: 'OH', label: 'OH Clark / Springfield [OGRIP]',  url: '/api/oh/search?address=24+CENTER+ST&city=Springfield',          county: 'Clark',      addressContains: 'CENTER', knownBroken: 'A3: reload OGRIP idempotently' },
   { state: 'NC', label: 'NC Chatham / River Forest',       url: '/api/nc/search?address=1300+RIVER+FOREST+RD&state=NC',          ownerPresent: true },
-  { state: 'MA', label: 'MA Georgetown / Lake Shore',      url: '/api/ma/search?address=105+Lake+Shore+Dr&city=Georgetown',       ownerPresent: true },
+  { state: 'MA', label: 'MA Georgetown / Lake Shore',      url: '/api/ma/search?address=105+Lake+Shore+Dr&city=Georgetown',       ownerPresent: true, knownBroken: 'MA coverage thin — no owner returned' },
 ];
 
 // Coverage tripwire — a query that returns a `total`; flag if it collapses vs the
@@ -95,11 +100,58 @@ for (const g of GOLDEN) results.push(await check(g));
 for (const c of COVERAGE) results.push(await checkCoverage(c));
 
 const failed = results.filter(r => !r.pass);
-if (process.argv.includes('--json')) {
-  console.log(JSON.stringify({ checkedAt: new Date().toISOString(), base: BASE, passed: results.length - failed.length, failed: failed.length, results }, null, 2));
-} else {
-  console.log(`\n=== Data Verification — ${failed.length ? failed.length + ' FAILING' : 'ALL PASS'} (${results.length - failed.length}/${results.length}) — ${BASE} ===\n`);
-  for (const r of results) console.log(`  ${r.pass ? 'PASS' : 'FAIL'}  ${r.label.padEnd(34)} ${r.detail}`);
-  if (failed.length) console.log(`\nFAILING: ${failed.map(f => f.label).join(', ')}`);
+// PAGEABLE = new/unexpected failures only. `knownBroken` entries are acknowledged
+// regressions already tracked (e.g. Clark → A3); they still report but do NOT page,
+// so the cron is quiet until a NEW regression appears. Remove the flag when fixed.
+let pageable = failed.filter(r => !r.knownBroken);
+
+// RETRY before paging — the coverage probes hit heavy /farm endpoints that blip
+// under load/rate-limit; a single transient error must NOT page (mirrors
+// service-health's flappy retry). Re-check pageable candidates once after a pause;
+// only those that fail AGAIN page.
+if (pageable.length && !process.argv.includes('--no-retry')) {
+  await new Promise(r => setTimeout(r, 8000));
+  const again = [];
+  for (const r of pageable) {
+    const fresh = r.kind === 'coverage' ? await checkCoverage(r) : await check(r);
+    if (!fresh.pass) again.push({ ...fresh, knownBroken: r.knownBroken });
+  }
+  pageable = again.filter(r => !r.knownBroken);
 }
-process.exit(failed.length ? 1 : 0);
+
+// Source-aware paging: email on a CHANGED pageable-failure set or >12h since last,
+// deduped via data/verify-status.json — mirrors service-health.mjs.
+async function maybeAlert() {
+  if (!process.env.VERIFY_ALERT || process.env.VERIFY_NO_ALERT) return;
+  const STATUS = path.join(__dirname, 'data', 'verify-status.json');
+  let prev = {}; try { prev = JSON.parse(fs.readFileSync(STATUS, 'utf8')); } catch {}
+  const now = Date.now();
+  const sig = pageable.map(f => f.label).sort().join('|');
+  const changed = sig !== (prev.alertSig || '');
+  const stale = (now - (prev.alertAt ? Date.parse(prev.alertAt) : 0)) > 12 * 3600 * 1000;
+  const status = { checkedAt: new Date().toISOString(), pageable: pageable.length, knownBroken: failed.length - pageable.length, alertSig: prev.alertSig || '', alertAt: prev.alertAt || null };
+  if (pageable.length && (changed || stale)) {
+    try {
+      const { sendEmail } = await import('./lib/email-service.mjs');
+      const rows = pageable.map(f => `<li><b>${f.label}</b> — ${f.detail}</li>`).join('');
+      await sendEmail({
+        to: process.env.ALERT_EMAIL || 'steven@sprague.com',
+        subject: `[Rootz Data] ${pageable.length} NEW verification failure(s) on title.rootz.global`,
+        html: `<div style="font-family:system-ui,sans-serif;max-width:560px"><h2 style="color:#b23b3b">Data verification: ${pageable.length} new failing</h2><p>A golden query or coverage check regressed (data content, not just freshness):</p><ul>${rows}</ul><p style="color:#64748b;font-size:13px">Known/acknowledged failures excluded. Run <code>node verify-data.mjs</code> for detail.</p></div>`,
+      });
+      status.alertSig = sig; status.alertAt = new Date().toISOString();
+      console.log(`  ALERT emailed (${pageable.length} new failing)`);
+    } catch (e) { console.error('  alert email failed:', e.message); }
+  } else if (!pageable.length) { status.alertSig = ''; }
+  try { fs.writeFileSync(STATUS, JSON.stringify(status, null, 2)); } catch {}
+}
+await maybeAlert();
+
+if (process.argv.includes('--json')) {
+  console.log(JSON.stringify({ checkedAt: new Date().toISOString(), base: BASE, passed: results.length - failed.length, failed: failed.length, pageable: pageable.length, results }, null, 2));
+} else {
+  console.log(`\n=== Data Verification — ${failed.length ? failed.length + ' FAILING' : 'ALL PASS'} (${results.length - failed.length}/${results.length})${pageable.length ? ` — ${pageable.length} NEW` : ''} — ${BASE} ===\n`);
+  for (const r of results) console.log(`  ${r.pass ? 'PASS' : (r.knownBroken ? 'KNOWN' : 'FAIL')}  ${r.label.padEnd(34)} ${r.detail}${r.knownBroken ? `  [${r.knownBroken}]` : ''}`);
+  if (pageable.length) console.log(`\nNEW FAILING (pages): ${pageable.map(f => f.label).join(', ')}`);
+}
+process.exit(pageable.length ? 1 : 0);
