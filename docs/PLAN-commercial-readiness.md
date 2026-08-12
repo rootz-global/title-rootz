@@ -114,4 +114,15 @@ service holds steady under load.**
 
 ### Status log
 - 2026-08-12: tracker created; loop starting at B1.
+- 2026-08-12: **CORE COMPLETE (B + A + C) via autonomous loop.** The dataset verifies its own content
+  every 6h and pages only on new regressions (B); loaded coverage survives the weekly refresh and
+  pipelines are idempotent (A); the memory recycles are root-caused + mitigated with a committed
+  ecosystem file (C). Deploy-drift closed on several previously box-only files (service-health,
+  pull-broward-clerk, pull-ohio, + the undeployed census-key fix). Loop STOPPED — remainder needs Steven:
+  - **ESCALATION 1 (C2 residual):** /api/fl/search recycles ~5/hr under crawler load (blips, not
+    outages). <1/hr needs a per-request-memory refactor OR horizontal scaling. Decision needed.
+  - **ESCALATION 2 (MA coverage):** MA Georgetown returns empty owner — MA data thin/broken (a real
+    MA pull, MassGIS L3, is in the acquisition matrix; part of D).
+  - **Workstream D (depth):** deferred by design — resume the 88-source matrix per-source, each gated
+    on the verify harness. A deliberate greenlight, not an autonomous grind.
 
