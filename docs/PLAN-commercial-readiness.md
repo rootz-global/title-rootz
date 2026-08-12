@@ -77,3 +77,40 @@ until it passes the verify harness.** Depth without verification is what got us 
 Definition of "commercially viable" for this dataset: **every advertised state/county resolves a known
 address correctly, freshness + coverage are continuously verified, no silent regressions, and the
 service holds steady under load.**
+
+---
+
+## EXECUTABLE TASK TRACKER (the loop reads this each cycle)
+
+**Loop protocol — each cycle:**
+1. Pick the FIRST task with status `todo` in order below (respect workstream gating: B before A before D).
+2. Do it end-to-end: build → run its acceptance check → deploy (only if the check passes) → `git commit`+push to main → set status `done` with a one-line result.
+3. If **blocked** (needs Steven, an external key/decision, or the acceptance check can't pass): set `blocked`, write the reason, ESCALATE (surface to Steven), skip to the next unblocked task — do NOT guess or stall.
+4. Report a 2-3 line status at each **workstream boundary** (B done, A done, …). Otherwise keep going without asking.
+5. Stop the loop when all tasks are `done`/`blocked` and report the completion + blocker list.
+
+**Rule:** no county/dataset ships (Workstream D) until the verify harness (B) passes for it. Depth is gated on verification.
+
+### Workstream B — Verify harness (do first)
+- [x] **B1 DONE** `verify-data.mjs` built + live. Golden set FL/OH/NC/MA; exits nonzero on fail. Immediately caught 2 real regressions: OH Clark/Springfield NOT FOUND (OGRIP wipe → fix in A3) and MA Georgetown owner EMPTY (MA coverage broken → track in D/A). 4/6 pass. (2026-08-12)
+- [ ] **B2** Coverage tripwire — per state→county expected parcel-count band from a saved baseline; flag >20% drop (would catch Clark→0). Acceptance: detects a synthetic drop.
+- [ ] **B3** Quality invariants — dedup-key uniqueness, county label matches source, situs parses, no all-blank records, encumbrances county-scoped+`verified`. Acceptance: flags a seeded dupe/blank/mislabel.
+- [ ] **B4** Wire `verify-data.mjs` into the health cron, source-aware paging (like the Broward check). Acceptance: a failing golden query pages; a passing run is quiet.
+
+### Workstream A — Idempotent pipelines
+- [ ] **A1** Stable dedup key (`state+county+parcelId`) on OH records; `pull-oh-ogrip.mjs` append→replace-by-county. Acceptance: re-running a county does NOT duplicate (line count stable).
+- [ ] **A2** OH city-index build MERGES the 5 CAMA counties + OGRIP's 83 (stop regenerate-from-CAMA-only). Acceptance: a rebuild keeps OGRIP records (Clark still resolves after rebuild).
+- [ ] **A3** Reload OGRIP correctly: Clark, then `--all` 82 counties. Acceptance: B1 golden queries pass for a sample of new counties; B2 coverage bands set.
+- [ ] **A4** Find what ran the Aug-10 OH rebuild; make it OGRIP-aware (or replace it). Acceptance: documented + no longer clobbers.
+
+### Workstream C — Stability
+- [ ] **C1** Diagnose the 1,746 restarts — RSS growth per endpoint (reuse Aug-2 method); identify the accumulator or confirm it's the guard under crawler load. Acceptance: root cause written.
+- [ ] **C2** Tame it — fix the accumulator or right-size the guard so recycles are rare (target <1/hr). Acceptance: measured recycle rate down.
+- [ ] **C3** Commit a PM2 **ecosystem file** capturing script/cwd/interpreter/`--max-memory-restart` so rebuilds don't lose config. Acceptance: file in repo, `pm2 start ecosystem` reproduces the process.
+
+### Workstream D — Depth (gated on B)
+- [ ] **D1+** Resume `ACQUISITION-MATRIX.md` build order (OH OGRIP already coded → TX TxGIO → TN → CO → MA L3 → GA GSCCCA…), each county/dataset gated: lands only after passing B1–B3. (One tracker row per source as reached.)
+
+### Status log
+- 2026-08-12: tracker created; loop starting at B1.
+
