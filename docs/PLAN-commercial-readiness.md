@@ -98,7 +98,7 @@ service holds steady under load.**
 - [x] **B4 DONE** verify-data.mjs now emails on NEW pageable failures (deduped via data/verify-status.json), with `knownBroken` entries acknowledged (report, don't page) and a **retry-before-page** guard so transient /farm blips don't false-alarm. Cron added: `45 */6 * * *` on localhost w/ VERIFY_ALERT. Quiet run confirmed (2 known-broken, pageable=0, no email). (2026-08-12)
 
 ### Workstream A — Idempotent pipelines
-- [ ] **A1** Stable dedup key (`state+county+parcelId`) on OH records; `pull-oh-ogrip.mjs` append→replace-by-county. Acceptance: re-running a county does NOT duplicate (line count stable).
+- [x] **A1 DONE** `pull-oh-ogrip.mjs` now REPLACE-BY-COUNTY: before writing a county, strips its prior OGRIP records from each city file (keeps other counties' OGRIP + all CAMA), then writes fresh. Proven idempotent: Clark pulled twice → Springfield stable at 47,642 lines (append would double). Clark reloaded as a side effect. NOTE: Clark's `knownBroken` flag stays until A2 makes it survive a rebuild. (2026-08-12)
 - [ ] **A2** OH city-index build MERGES the 5 CAMA counties + OGRIP's 83 (stop regenerate-from-CAMA-only). Acceptance: a rebuild keeps OGRIP records (Clark still resolves after rebuild).
 - [ ] **A3** Reload OGRIP correctly: Clark, then `--all` 82 counties. Acceptance: B1 golden queries pass for a sample of new counties; B2 coverage bands set.
 - [ ] **A4** Find what ran the Aug-10 OH rebuild; make it OGRIP-aware (or replace it). Acceptance: documented + no longer clobbers.

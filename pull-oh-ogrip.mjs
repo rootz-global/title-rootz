@@ -132,14 +132,27 @@ async function pullCounty(county, { limit = 0, dry = false } = {}) {
   }
 
   if (!fs.existsSync(CITIES_DIR)) fs.mkdirSync(CITIES_DIR, { recursive: true });
+  // IDEMPOTENT replace-by-county: re-running a county must NOT duplicate. For each
+  // target city file, strip THIS county's prior OGRIP records (keep other counties'
+  // OGRIP and all non-OGRIP/CAMA records), then write the fresh set. The dedup key
+  // is (state OH + County + parcel), realized here by removing County==this before
+  // re-adding — so a re-run is stable, not doubled.
   let written = 0;
   for (const [city, recs] of byCity) {
     const fp = path.join(CITIES_DIR, `OH_CITY_OF_${safeCity(city)}.jsonl`);
-    // Append (a city can span counties); de-dupe not needed for distinct parcels.
-    fs.appendFileSync(fp, recs.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const keptLines = [];
+    if (fs.existsSync(fp)) {
+      for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try { const r = JSON.parse(line); if (r._src === 'ohio-ogrip' && r.County === county) continue; } catch {}
+        keptLines.push(line);
+      }
+    }
+    for (const r of recs) keptLines.push(JSON.stringify(r));
+    fs.writeFileSync(fp, keptLines.join('\n') + '\n');
     written += recs.length;
   }
-  console.log(`  wrote ${written.toLocaleString()} records across ${byCity.size} city files`);
+  console.log(`  wrote ${written.toLocaleString()} records across ${byCity.size} city files (replace-by-county)`);
   return { county, records: kept, written, cities: byCity.size };
 }
 
