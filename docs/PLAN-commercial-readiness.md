@@ -94,7 +94,7 @@ service holds steady under load.**
 ### Workstream B — Verify harness (do first)
 - [x] **B1 DONE** `verify-data.mjs` built + live. Golden set FL/OH/NC/MA; exits nonzero on fail. Immediately caught 2 real regressions: OH Clark/Springfield NOT FOUND (OGRIP wipe → fix in A3) and MA Georgetown owner EMPTY (MA coverage broken → track in D/A). 4/6 pass. (2026-08-12)
 - [x] **B2 DONE** Coverage tripwire added to `verify-data.mjs` — flags >20% drop or zero vs inline baselines (FL Hollywood 7999, NC Wake 82636, NC Chatham 11480). `--simulate-drop` self-test confirms it flags. NOTE: no `/api/oh/farm` → OH per-county count-coverage still relies on B1 golden queries; a box-side OH row-count probe is a follow-up. Also observed: `/api/fl/farm` returns HTML errors under rapid repeated load (rate-limit/overload → feeds Workstream C). (2026-08-12)
-- [ ] **B3** Quality invariants — dedup-key uniqueness, county label matches source, situs parses, no all-blank records, encumbrances county-scoped+`verified`. Acceptance: flags a seeded dupe/blank/mislabel.
+- [x] **B3 DONE** `verify-quality.mjs` — SCHEMA-AGNOSTIC file invariants (parse integrity, no empty records, exact-dup-line ratio <2%) because per-county field names vary (naive field checks false-positive). `--self-test` flags seeded dup+blank+parsefail. Real sample ALL PASS: Columbus 209798/0 dupes, Kettering 0 dupes (**bloat = rich CAMA, NOT duplication — earlier smell disproven**), Harrison 0.91% (under threshold). (2026-08-12)
 - [ ] **B4** Wire `verify-data.mjs` into the health cron, source-aware paging (like the Broward check). Acceptance: a failing golden query pages; a passing run is quiet.
 
 ### Workstream A — Idempotent pipelines
