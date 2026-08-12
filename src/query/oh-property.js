@@ -74,6 +74,36 @@ function searchOhioByAddress(address, city) {
         return lines.map(l => {
           try {
             const rec = JSON.parse(l);
+
+            // OGRIP statewide layer (the 83 counties without per-county CAMA).
+            // BREADTH not depth: situs address + land use + mailing, but no owner
+            // name / value (owner+value stay via CAMADataSite drill-down). Carry
+            // the real County through so records are never mislabeled 'Franklin'.
+            if (rec._src === 'ohio-ogrip') {
+              return {
+                TRUE_SITE_ADDR: (rec.SITEADDRESS || '').trim(),
+                TRUE_SITE_CITY: rec.CITY || cityUp,
+                TRUE_SITE_ZIP_CODE: rec.ZIPCD || '',
+                TRUE_OWNER1: '', TRUE_OWNER2: '',
+                TRUE_MAILING_ADDR1: rec.MAILADD1 || '',
+                TRUE_MAILING_CITY: rec.MAILCITY || '',
+                TRUE_MAILING_STATE: rec.MAILSTATE || 'OH',
+                TRUE_MAILING_ZIP_CODE: rec.MAILZIP || '',
+                FOLIO: rec.PARCELID || rec.STATEPARCELID || '',
+                DOR_CODE_CUR: rec.LUCCODE || '',
+                DOR_DESC: rec.LUCDESC || '',
+                YEAR_BUILT: 0, BUILDING_HEATED_AREA: 0,
+                LOT_SIZE: (Number(rec.LANDAREA_ACRES) || 0) * 43560,
+                BUILDING_VAL_CUR: null, LAND_VAL_CUR: null, TOTAL_VAL_CUR: null,
+                SALE_PRICE: null, SALE_DATE: null,
+                _state: 'OH', _county: rec.County || '',
+                _source: 'ohio-ogrip',
+                _depth: 'parcel-only',
+                _camaLink: rec.CAMADataSite || '',
+                _note: 'Statewide parcel layer (OGRIP): situs address + land use only. Owner name and value not in this source — see _camaLink for the county CAMA record.',
+              };
+            }
+
             // Detect format: Hamilton uses CAGIS.AUDREAL_VW. prefix
             const isHamilton = 'CAGIS.AUDREAL_VW.OWNNM1' in rec;
             const g = (key) => rec[key]; // shorthand getter
