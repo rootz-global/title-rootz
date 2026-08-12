@@ -99,9 +99,9 @@ service holds steady under load.**
 
 ### Workstream A — Idempotent pipelines
 - [x] **A1 DONE** `pull-oh-ogrip.mjs` now REPLACE-BY-COUNTY: before writing a county, strips its prior OGRIP records from each city file (keeps other counties' OGRIP + all CAMA), then writes fresh. Proven idempotent: Clark pulled twice → Springfield stable at 47,642 lines (append would double). Clark reloaded as a side effect. NOTE: Clark's `knownBroken` flag stays until A2 makes it survive a rebuild. (2026-08-12)
-- [ ] **A2** OH city-index build MERGES the 5 CAMA counties + OGRIP's 83 (stop regenerate-from-CAMA-only). Acceptance: a rebuild keeps OGRIP records (Clark still resolves after rebuild).
+- [x] **A2 DONE** `pull-ohio.mjs` `rebuildAllCityIndexes()` now STASHES OGRIP records before the CAMA clear and RESTORES them after (keyed by source file) — no re-pull. Acceptance MET: ran `--index-all` (the exact Aug-10 wipe path); Clark still resolves after. Clark's golden `knownBroken` flag cleared (now durable). pull-ohio.mjs brought into git (was box-only). (2026-08-12)
 - [ ] **A3** Reload OGRIP correctly: Clark, then `--all` 82 counties. Acceptance: B1 golden queries pass for a sample of new counties; B2 coverage bands set.
-- [ ] **A4** Find what ran the Aug-10 OH rebuild; make it OGRIP-aware (or replace it). Acceptance: documented + no longer clobbers.
+- [x] **A4 DONE** Culprit = weekly cron `0 7 * * 1 pull-ohio.mjs --county all` (Aug 10 was a Monday); its `rebuildAllCityIndexes()` deleted all OH_*.jsonl + rebuilt CAMA-only. Fixed by A2 (stash/restore OGRIP); the cron line itself needs no change. (2026-08-12)
 
 ### Workstream C — Stability
 - [ ] **C1** Diagnose the 1,746 restarts — RSS growth per endpoint (reuse Aug-2 method); identify the accumulator or confirm it's the guard under crawler load. Acceptance: root cause written.
