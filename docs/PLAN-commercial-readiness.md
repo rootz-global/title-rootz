@@ -109,8 +109,20 @@ service holds steady under load.**
 - [x] **C3 DONE** `ecosystem.config.cjs` in repo + on box captures title-records (script/cwd/`--env-file=.env`/`max_memory_restart 1600M`); parses locally + on box; `pm2 start ecosystem.config.cjs` reproduces the process. Closes the PM2-config drift gap. (2026-08-12)
   _(C3 done — see the C3 line above.)_
 
-### Workstream D — Depth (gated on B)
-- [ ] **D1+** Resume `ACQUISITION-MATRIX.md` build order (OH OGRIP already coded → TX TxGIO → TN → CO → MA L3 → GA GSCCCA…), each county/dataset gated: lands only after passing B1–B3. (One tracker row per source as reached.)
+### Workstream E — /api/fl/search memory refactor (Steven greenlit 2026-08-12; do BEFORE loading more depth)
+Goal: recycles rare (root cause, not the guard). Measure RSS-under-load as acceptance (verify-data can't see memory).
+- [ ] **E1** Baseline: capture RSS-growth-rate under representative /api/fl/search load (drive N concurrent search requests, sample RSS climb) + note the enrichment fan-out (how many concurrent outbound fetches per request in fl-property.js assemble step).
+- [ ] **E2** Cap concurrency of the outbound enrichment fan-out (limit parallel external fetches per request) and make non-essential enrichments lazy/skippable so a request holds less peak memory. Acceptance: RSS-growth-rate under the same load measurably lower than E1; deploy only if verify-data still passes.
+- [ ] **E3** Confirm recycle rate dropped (measurement window vs a fresh baseline); target <1/hr. If met, lower the guard back toward 1100–1300M. If not, escalate (scaling).
+
+### Workstream D — Depth: statewide-parcel breadth (Steven greenlit 2026-08-12; gated on verify harness)
+Each new state = puller + query engine + `/api/<st>/search` + a golden query added to verify-data before it counts as done.
+- [ ] **D1** OH remaining ~82 counties: `pull-oh-ogrip.mjs --all` (background; idempotent + rebuild-safe). Gate: sample new counties pass golden; add 1–2 more OH golden queries.
+- [ ] **D2** MA fix: MassGIS L3 pull so MA returns owner/value (fixes the known-broken MA Georgetown golden). Gate: MA golden passes, clear its knownBroken flag.
+- [ ] **D3** TX TxGIO StratMap statewide parcels (new state): puller + `/api/tx/search` + golden. (Free bulk, 253/254 CADs.)
+- [ ] **D4** CO geodata statewide parcels (new state): puller + `/api/co/search` + golden.
+- [ ] **D5** TN Comptroller statewide parcels (new state): puller + `/api/tn/search` + golden.
+- (GA GSCCCA recorded-instrument moat = separate, heavier track — hold for a dedicated greenlight.)
 
 ### Status log
 - 2026-08-12: tracker created; loop starting at B1.
