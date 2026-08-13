@@ -117,7 +117,7 @@ Goal: recycles rare (root cause, not the guard). Measure RSS-under-load as accep
 
 ### Workstream D — Depth: statewide-parcel breadth (Steven greenlit 2026-08-12; gated on verify harness)
 Each new state = puller + query engine + `/api/<st>/search` + a golden query added to verify-data before it counts as done.
-- [ ] **D1** OH remaining ~82 counties: `pull-oh-ogrip.mjs --all` (background; idempotent + rebuild-safe). Gate: sample new counties pass golden; add 1–2 more OH golden queries.
+- [~] **D1 RUNNING** `pull-oh-ogrip.mjs --all` launched in background (task b7zprekjd, ~1-2h for ~6M parcels; idempotent + rebuild-safe). Sample-new-counties acceptance already proven (Clark + Lucas golden pass). ON COMPLETION: grab a situs address from 1-2 more new counties, add golden queries, verify pass → mark DONE. (2026-08-12)
 - [ ] **D2** MA fix: MassGIS L3 pull so MA returns owner/value (fixes the known-broken MA Georgetown golden). Gate: MA golden passes, clear its knownBroken flag.
 - [ ] **D3** TX TxGIO StratMap statewide parcels (new state): puller + `/api/tx/search` + golden. (Free bulk, 253/254 CADs.)
 - [ ] **D4** CO geodata statewide parcels (new state): puller + `/api/co/search` + golden.
