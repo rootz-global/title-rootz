@@ -334,10 +334,15 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   // Run ALL external enrichment calls in parallel. elevation + investor-signals used
   // to run sequentially after this block, stacking their latency onto the cold path;
   // they're independent of flood/census/zoning, so fold them in. (Jun 20 2026)
+  // identifyAllLayers hits Miami-Dade GIS and returns a large layer/geometry blob;
+  // for the ~majority of FL (statewide, non-MDC) parcels it yields nothing useful
+  // yet costs a fetch + a big object held per request (a memory driver under load —
+  // commercial-readiness E2). Gate it to Miami-Dade, same as the evac-routes gate.
+  const isMDC = String(prop.CO_NO) === '23';
   const [flood, census, layers, elevation, investorSignals] = await Promise.all([
     lat && lng ? getFloodZone(lat, lng) : { zone: 'COORDINATES_UNAVAILABLE' },
     getCensusData(address, city, 'FL'),
-    lat && lng ? identifyAllLayers(lat, lng) : {},
+    isMDC && lat && lng ? identifyAllLayers(lat, lng) : {},
     getElevation(lat, lng),
     getInvestorSignals(prop, lat, lng)
   ]);
@@ -401,7 +406,14 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   if (femaDisasters) sourceList.push('FEMA (disaster declarations)');
   if (clerkSignals.length) sourceList.push('Broward County Clerk of Courts (SFTP bulk)');
 
-  const rawData = JSON.stringify({ prop, flood, demographics, layers, schools, permits, hospitals, evCharging, triFacilities, investorSignals, irsIncome, nfipClaims });
+  // Hash a COMPACT set of stable identifying facts, not the whole multi-layer object
+  // (E2): stringifying prop+layers+every enrichment allocated a big transient string
+  // per request. The digest still uniquely binds the record's core facts.
+  const rawData = JSON.stringify({
+    id: prop.FOLIO, co: prop.CO_NO, owner: prop.TRUE_OWNER1, addr: prop.TRUE_SITE_ADDR,
+    val: prop.TOTAL_VAL_CUR || prop.JV, floodZone: flood?.zone,
+    pop: demographics?.population, elev: elevation?.elevationFt, permits: permits.length,
+  });
   const docHash = crypto.createHash('sha256').update(rawData).digest('hex');
 
   let confidence = 0.40;
