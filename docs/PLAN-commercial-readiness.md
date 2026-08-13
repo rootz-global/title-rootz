@@ -111,7 +111,7 @@ service holds steady under load.**
 
 ### Workstream E — /api/fl/search memory refactor (Steven greenlit 2026-08-12; do BEFORE loading more depth)
 Goal: recycles rare (root cause, not the guard). Measure RSS-under-load as acceptance (verify-data can't see memory).
-- [ ] **E1** Baseline: capture RSS-growth-rate under representative /api/fl/search load (drive N concurrent search requests, sample RSS climb) + note the enrichment fan-out (how many concurrent outbound fetches per request in fl-property.js assemble step).
+- [x] **E1 DONE — BASELINE:** ~17 MB RSS/request (16 reqs: 1091→1359 MB, not promptly reclaimed). Fan-out = `Promise.all` of 5 external ops (getFloodZone/FEMA, getCensusData/geocode+ACS, identifyAllLayers/MDC-GIS, getElevation/USGS, getInvestorSignals) at fl-property.js:337; rest (schools/hospitals/ev/tri/roads/irs/nfip/fema) are sync cached lookups. Big assembled object + `rawData = JSON.stringify({whole object})` for the doc-hash (fl-property.js:389) = big transient/req. **E2 levers:** (1) gate `identifyAllLayers` to Miami-Dade only (most FL is statewide → wasteful MDC-GIS fetch+payload; same pattern as the evac gate); (2) hash a compact field subset, not the whole object; (3) census geocoder is the slow/failing call under load. (2026-08-12)
 - [ ] **E2** Cap concurrency of the outbound enrichment fan-out (limit parallel external fetches per request) and make non-essential enrichments lazy/skippable so a request holds less peak memory. Acceptance: RSS-growth-rate under the same load measurably lower than E1; deploy only if verify-data still passes.
 - [ ] **E3** Confirm recycle rate dropped (measurement window vs a fresh baseline); target <1/hr. If met, lower the guard back toward 1100–1300M. If not, escalate (scaling).
 
