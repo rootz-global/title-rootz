@@ -34,6 +34,7 @@ const GOLDEN = [
   { state: 'OH', label: 'OH Franklin / Columbus',          url: '/api/oh/search?address=100+E+BROAD+ST&city=Columbus',           ownerPresent: true },
   { state: 'OH', label: 'OH Clark / Springfield [OGRIP]',  url: '/api/oh/search?address=24+CENTER+ST&city=Springfield',          county: 'Clark',      addressContains: 'CENTER' },
   { state: 'OH', label: 'OH Lucas / Toledo [OGRIP]',       url: '/api/oh/search?address=3948+TORRANCE+DR&city=Toledo',           county: 'Lucas',      addressContains: 'TORRANCE' },
+  { state: 'OH', label: 'OH Stark / Louisville [OGRIP]',   url: '/api/oh/search?address=203+N+WALNUT+ST&city=Louisville',        county: 'Stark',      addressContains: 'WALNUT' },
   { state: 'NC', label: 'NC Chatham / River Forest',       url: '/api/nc/search?address=1300+RIVER+FOREST+RD&state=NC',          ownerPresent: true },
   { state: 'MA', label: 'MA Georgetown / Lake Shore',      url: '/api/ma/search?address=105+Lake+Shore+Dr&city=Georgetown',       ownerPresent: true, knownBroken: 'MA coverage thin — no owner returned' },
 ];
