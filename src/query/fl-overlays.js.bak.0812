@@ -22,8 +22,7 @@
 
 import { fetchJSON } from '../lib/fetch.js';
 import { loadDataFile } from '../lib/data-loader.js';
-import { FEMA_FLOOD, CENSUS_GEOCODER, CENSUS_ACS, MDC_IDENTIFY, SSL_CERTS,
-         CENSUS_API_KEY, CENSUS_KEY_HINT, withCensusKey } from '../lib/constants.js';
+import { FEMA_FLOOD, CENSUS_GEOCODER, CENSUS_ACS, MDC_IDENTIFY, SSL_CERTS } from '../lib/constants.js';
 
 export async function getFloodZone(lat, lng) {
   const params = new URLSearchParams({
@@ -102,14 +101,8 @@ export async function getCensusData(address, city, state = 'FL', zip = '') {
   // Fallback: hit live ACS API
   const acsUrl = `${CENSUS_ACS}?get=B19013_001E,B01003_001E,B25077_001E,B25064_001E,B25003_001E,B25003_002E,B01002_001E,B19301_001E,B25002_001E,B25002_002E,B25002_003E&for=block%20group:${blockGroup}&in=state:${stateCode}+county:${county}+tract:${tract}`;
 
-  const acsData = await fetchJSON(withCensusKey(acsUrl));
-  if (!acsData || acsData.length < 2) {
-    // Distinguish "no key configured" from "no data for this geography" —
-    // keyless requests redirect to an HTML page and fail opaquely.
-    return CENSUS_API_KEY
-      ? { error: 'ACS data not available', tract, blockGroup }
-      : { error: 'ACS data not available', hint: CENSUS_KEY_HINT, tract, blockGroup };
-  }
+  const acsData = await fetchJSON(acsUrl);
+  if (!acsData || acsData.length < 2) return { error: 'ACS data not available', tract, blockGroup };
 
   const values = acsData[1];
   const occupied = parseInt(values[8]) || 0;

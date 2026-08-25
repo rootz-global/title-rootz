@@ -26,7 +26,7 @@ import { execSync } from 'child_process';
 import { fetchJSON } from '../lib/fetch.js';
 import { getParcelDb, normAddr } from '../lib/parcel-db.js';
 import { DATA_DIR, CITIES_DIR } from '../lib/config.js';
-import { MDC_PROPERTY_LAYER, CENSUS_GEOCODER, SSL_CERTS, flCountyName, isBrowardParcel } from '../lib/constants.js';
+import { MDC_PROPERTY_LAYER, CENSUS_GEOCODER, SSL_CERTS } from '../lib/constants.js';
 import { lookupClerkSignals } from './fl-clerk.js';
 import { getFloodZone, getCensusData, identifyAllLayers, getElevation, getIRSIncomeByZip, getNFIPClaimsByZip, getFEMADisastersByCounty, getStatewideEconomics, getMarketEconomics, lookupStatwideCensus, lookupCensusBlockGroup } from './fl-overlays.js';
 import { findNearestSchools, findBuildingPermits, findNearbyRoadWork, findNearestHospitals, findNearestEVCharging, findNearestTRIFacilities, findNearestEvacuationRoute } from './fl-proximity.js';
@@ -334,15 +334,10 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   // Run ALL external enrichment calls in parallel. elevation + investor-signals used
   // to run sequentially after this block, stacking their latency onto the cold path;
   // they're independent of flood/census/zoning, so fold them in. (Jun 20 2026)
-  // identifyAllLayers hits Miami-Dade GIS and returns a large layer/geometry blob;
-  // for the ~majority of FL (statewide, non-MDC) parcels it yields nothing useful
-  // yet costs a fetch + a big object held per request (a memory driver under load —
-  // commercial-readiness E2). Gate it to Miami-Dade, same as the evac-routes gate.
-  const isMDC = String(prop.CO_NO) === '23';
   const [flood, census, layers, elevation, investorSignals] = await Promise.all([
     lat && lng ? getFloodZone(lat, lng) : { zone: 'COORDINATES_UNAVAILABLE' },
     getCensusData(address, city, 'FL'),
-    isMDC && lat && lng ? identifyAllLayers(lat, lng) : {},
+    lat && lng ? identifyAllLayers(lat, lng) : {},
     getElevation(lat, lng),
     getInvestorSignals(prop, lat, lng)
   ]);
@@ -353,11 +348,7 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   const hospitals = findNearestHospitals(lat, lng, 15.0);
   const evCharging = findNearestEVCharging(lat, lng, 5.0);
   const triFacilities = findNearestTRIFacilities(lat, lng, 5.0);
-  // Evacuation routes are Miami-Dade OEM data (and the matcher isn't distance-
-  // bounded), so they may ONLY be attached to Miami-Dade parcels — otherwise
-  // every property statewide got MDC routes with an "MDC OEM" source stamp.
-  const isMiamiDade = String(prop.CO_NO) === '23';
-  const evacuationRoutes = isMiamiDade ? findNearestEvacuationRoute(lat, lng) : null;
+  const evacuationRoutes = findNearestEvacuationRoute(lat, lng);
   const roadWork = findNearbyRoadWork(lat, lng, 2.0);
   const economics = getMarketEconomics();
   const statewideEcon = getStatewideEconomics(prop.TRUE_SITE_CITY);
@@ -368,10 +359,8 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   const femaDisasters = getFEMADisastersByCounty(prop.TRUE_SITE_CITY);
 
   const ownerName = prop.TRUE_OWNER1 || '';
-  // Broward = FL DOR code 16 (the old check used 6, which never matched real
-  // data — it only ever worked via the city-name fallback). The Broward Clerk
-  // corpus is Broward-only, so court signals attach to Broward parcels only.
-  const isBroward = isBrowardParcel(prop.CO_NO, prop.TRUE_SITE_CITY);
+  const isBroward = prop.CO_NO === 6 || prop.CO_NO === '6' ||
+    (prop.TRUE_SITE_CITY || '').toUpperCase().match(/FORT LAUDERDALE|HOLLYWOOD|PEMBROKE PINES|CORAL SPRINGS|MIRAMAR|POMPANO BEACH|DAVIE|PLANTATION|SUNRISE|DEERFIELD BEACH|LAUDERHILL|TAMARAC|WESTON|COCONUT CREEK|MARGATE|LAUDERDALE LAKES|OAKLAND PARK|WILTON MANORS|HALLANDALE|DANIA|COOPER CITY/);
   const clerkSignals = isBroward ? lookupClerkSignals(ownerName, prop.FOLIO) : [];
   const farmingScore = computeFarmingScore(investorSignals, clerkSignals, permits);
 
@@ -382,38 +371,22 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
     if (cached) demographics = { ...census, ...cached, source: cached.source || 'US Census ACS 2022 (cached)' };
   }
 
-  // The parcel of record came from EITHER the DOR statewide export OR live MDC
-  // GIS — name the one actually used. Claiming gisweb.miamidade.gov for a DOR
-  // parcel in another county is a false origin record (the whole point of this
-  // product), so it must be conditional on _statewide.
-  const parcelSource = prop._statewide
-    ? 'FL Department of Revenue (statewide NAL/SDF parcel export)'
-    : 'gisweb.miamidade.gov (Miami-Dade Property Appraiser GIS)';
-  const sourceList = [parcelSource, 'hazards.fema.gov', 'api.census.gov', 'geocoding.geo.census.gov'];
+  const sourceList = ['gisweb.miamidade.gov', 'hazards.fema.gov', 'api.census.gov', 'geocoding.geo.census.gov'];
   if (elevation) sourceList.push('epqs.nationalmap.gov (USGS elevation)');
   if (schools.public.length) sourceList.push('cached:schools.json (FL DOE)');
   if (permits.length) sourceList.push(`Building permits (${[...new Set(permits.map(p => p.source).filter(Boolean))].join(', ') || 'cached'})`);
   if (hospitals.length) sourceList.push('cached:hospitals.json (CMS Medicare)');
   if (evCharging.length) sourceList.push('cached:ev-charging.json (DOE AFDC)');
   if (triFacilities.length) sourceList.push('cached:epa-tri-facilities.json (EPA TRI)');
-  if (evacuationRoutes?.length) sourceList.push('cached:evacuation-routes.json (MDC OEM)');
+  if (evacuationRoutes) sourceList.push('cached:evacuation-routes.json (MDC OEM)');
   if (Object.keys(economics).length || statewideEcon) sourceList.push('FRED/BLS economic data');
-  // Pictometry is a Miami-Dade-only sales source; statewide parcels get their
-  // sales from the DOR export (already credited above), so don't claim it.
-  if (!prop._statewide && investorSignals.salesHistory?.length) sourceList.push('MDC Pictometry (sales/assessed values)');
+  if (investorSignals.salesHistory?.length) sourceList.push('MDC Pictometry (sales/assessed values)');
   if (irsIncome) sourceList.push('IRS SOI (income by zip code)');
   if (nfipClaims) sourceList.push('FEMA NFIP (flood insurance claims)');
   if (femaDisasters) sourceList.push('FEMA (disaster declarations)');
   if (clerkSignals.length) sourceList.push('Broward County Clerk of Courts (SFTP bulk)');
 
-  // Hash a COMPACT set of stable identifying facts, not the whole multi-layer object
-  // (E2): stringifying prop+layers+every enrichment allocated a big transient string
-  // per request. The digest still uniquely binds the record's core facts.
-  const rawData = JSON.stringify({
-    id: prop.FOLIO, co: prop.CO_NO, owner: prop.TRUE_OWNER1, addr: prop.TRUE_SITE_ADDR,
-    val: prop.TOTAL_VAL_CUR || prop.JV, floodZone: flood?.zone,
-    pop: demographics?.population, elev: elevation?.elevationFt, permits: permits.length,
-  });
+  const rawData = JSON.stringify({ prop, flood, demographics, layers, schools, permits, hospitals, evCharging, triFacilities, investorSignals, irsIncome, nfipClaims });
   const docHash = crypto.createHash('sha256').update(rawData).digest('hex');
 
   let confidence = 0.40;
@@ -432,23 +405,11 @@ export async function assemblePropertyIntelligence(address, city = 'Miami Beach'
   if (investorSignals.salesHistory?.length) confidence += 0.03;
   confidence = Math.min(1.0, Math.round(confidence * 100) / 100);
 
-  // Stamp the ACTUAL county (from CO_NO), not a hardcoded Miami-Dade identity.
-  const countyName = flCountyName(prop.CO_NO);
-  const countyKey = countyName ? countyName.toUpperCase().replace(/[^A-Z0-9]+/g, '-') : (prop.CO_NO ? `CO${prop.CO_NO}` : 'UNK');
-  // TLS provenance must list ONLY the endpoints actually used for THIS record —
-  // include a cert only when its host appears in the final sourceList (so the
-  // Miami-Dade cert no longer signs a Marion County parcel).
-  const provenance = {};
-  for (const [host, cert] of Object.entries(SSL_CERTS)) {
-    if (sourceList.some(s => s.includes(host))) provenance[host] = cert;
-  }
-
   return {
     origin: {
-      version: '0.5', state: 'FL', county: countyName || null,
-      propertyId: `FL-${countyKey}-${prop.FOLIO}`, folio: prop.FOLIO,
+      version: '0.5', propertyId: `FL-MDC-${prop.FOLIO}`, folio: prop.FOLIO,
       assembledDate: timestamp, sources: sourceList, dataLayers: sourceList.length,
-      documentHash: docHash, provenance, confidence
+      documentHash: docHash, provenance: SSL_CERTS, confidence
     },
     property: {
       address: prop.TRUE_SITE_ADDR, city: prop.TRUE_SITE_CITY, state: 'FL',

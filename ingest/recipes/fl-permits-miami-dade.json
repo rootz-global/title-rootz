@@ -4,7 +4,11 @@
   "transport": "arcgis",
   "source": {
     "endpoint": "https://services.arcgis.com/8Pc9XBTAsYuxx9Ny/arcgis/rest/services/BuildingPermit_gdb/FeatureServer/0",
-    "pagination": { "method": "offset", "batchSize": 2000, "delay": 300 }
+    "pagination": {
+      "method": "offset",
+      "batchSize": 2000,
+      "delay": 300
+    }
   },
   "transform": "permit-record",
   "fieldMapping": {
@@ -15,14 +19,21 @@
     "status": "BPSTATUS",
     "estimatedValue": "ESTVALUE",
     "contractor": "CONTRNAME",
-    "issueDate": { "field": "ISSUDATE", "format": "epoch_ms" },
-    "finalDate": { "field": "FINALDATE", "format": "epoch_ms" },
+    "issueDate": {
+      "field": "ISSUDATE",
+      "format": "epoch_ms"
+    },
+    "finalDate": {
+      "field": "FINALDATE",
+      "format": "epoch_ms"
+    },
     "city": "MUNICODE",
     "county": "miami-dade"
   },
   "loader": "jsonl-city-index",
   "output": "data/florida/permits/miami-dade.jsonl",
   "schedule": "0 4 * * 1",
-  "lastRun": null,
-  "recordCount": null
+  "lastRun": "2026-07-06T04:03:10.216Z",
+  "recordCount": 262157,
+  "lastDuration": "188.1s"
 }

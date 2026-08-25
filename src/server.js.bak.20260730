@@ -18,7 +18,6 @@ import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio, getInvest
 import { searchMAProperty } from './query/ma-property.js';
 import { farmingSearch } from './query/fl-farming.js';
 import { lookupClerkSignals } from './query/fl-clerk.js';
-import { buildPropertyPassport } from './query/fl-passport.js';
 import { getFloodZone, getCensusData, identifyAllLayers, getElevation, getIRSIncomeByZip, getNFIPClaimsByZip, getFEMADisastersByCounty, getStatewideEconomics, getMarketEconomics, lookupStatwideCensus, lookupCensusBlockGroup } from './query/fl-overlays.js';
 import { findNearestSchools, findBuildingPermits, findNearestHospitals, findNearestEVCharging, findNearestTRIFacilities } from './query/fl-proximity.js';
 import { assembleTimeshareIntelligence, searchDBPRTimeshare } from './query/fl-timeshare.js';
@@ -294,16 +293,6 @@ async function handleRequest(req, res) {
       return json(res, data);
     }
 
-    if (path_ === '/api/fl/passport' && method === 'GET') {
-      logAccess(req, '/api/fl/passport', 200);
-      const address = params.get('address');
-      const city = params.get('city') || '';
-      const folio = params.get('folio');
-      if (!address && !folio) return json(res, { error: 'address (with city) or folio parameter required' }, 400);
-      const data = await buildPropertyPassport({ address, city, folio });
-      return json(res, data, data.error ? 404 : 200);
-    }
-
     if (path_ === '/api/fl/lookup' && method === 'GET') {
       logAccess(req, '/api/fl/lookup', 200);
       const address = params.get('address');
@@ -558,7 +547,6 @@ async function handleRequest(req, res) {
             how: 'All data is at /api/fl/search?address={ADDR}&city={CITY} (FL), /api/nc/search?address={ADDR}&state=NC (NC), /api/oh/search?address={ADDR}&city={CITY} (OH). Returns full property intelligence JSON. No API key needed.',
             endpoints: {
               search: '/api/fl/search?address={ADDR}&city={CITY} — full property intelligence (owner, value, court records, flood, census)',
-              passport: '/api/fl/passport?address={ADDR}&city={CITY} — verifiable PUBLIC property record: canonical propertyId, chain of title, encumbrances, anchorable content hash (the KV-PUBLIC layer a Title Wallet anchors on-chain)',
               nc_search: '/api/nc/search?address={ADDR}&state=NC — North Carolina property (all 100 counties; Chatham adds deeds/mortgages)',
               nc_farm: '/api/nc/farm?county={COUNTY}&signals=vacant,absentee,out-of-state — NC farming prospects',
               ma_search: '/api/ma/search?address={ADDR}&city={TOWN} — Massachusetts property (live MassGIS assessor + FEMA flood; recorded deed chain + title analysis where pulled)',

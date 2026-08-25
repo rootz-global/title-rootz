@@ -21,7 +21,7 @@
  */
 
 const cache = new Map();                 // url -> { value, expires }
-const MAX_ENTRIES = 1500;                // bound memory (was 5000 — under AI-crawler load the cache of parsed JSON responses, keyed by highly-variable geocoder URLs, was a memory driver behind the ~every-few-min recycle)
+const MAX_ENTRIES = 5000;                // bound memory
 const TTL_OK = 6 * 60 * 60 * 1000;       // 6h — these upstream datasets are stable
 const TTL_FAIL = 60 * 1000;              // 60s negative cache — fail fast when an API is down
 
@@ -41,7 +41,7 @@ function store(url, value, ttl) {
  * @param {number} timeout - Timeout in ms (default 6000)
  * @returns {any|null} Parsed JSON or null on error/timeout
  */
-export async function fetchJSON(url, timeout = 4000) {
+export async function fetchJSON(url, timeout = 6000) {
   const hit = cache.get(url);
   if (hit && hit.expires > Date.now()) return hit.value;
 

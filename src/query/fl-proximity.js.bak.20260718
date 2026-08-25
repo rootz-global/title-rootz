@@ -312,15 +312,10 @@ export function findNearestTRIFacilities(lat, lng, maxDistance = 5.0) {
 export function findNearbyRoadWork(lat, lng, maxDistanceMiles = 2.0) {
   const roads = loadDataFile('florida/road-improvements.json');
   if (!roads || !lat || !lng) return [];
-  // Coerce before trimming: these come straight from an upstream GIS export
-  // whose column types are not guaranteed. CONSTDATE arrived as an epoch number
-  // in the road refresh, and `.trim is not a function` took out the whole
-  // /api/fl/search endpoint (road work is assembled into every FL property).
-  const s = (v) => (v === null || v === undefined ? '' : String(v).trim());
   return roads.slice(0, 20).map(r => ({
-    agency: s(r.AGENCY), location: s(r.LOCATION),
-    project: s(r.PROJECT), status: s(r.STATUS),
-    consultant: s(r.CONSULTANT), constructionDate: s(r.CONSTDATE)
+    agency: (r.AGENCY || '').trim(), location: (r.LOCATION || '').trim(),
+    project: (r.PROJECT || '').trim(), status: (r.STATUS || '').trim(),
+    consultant: (r.CONSULTANT || '').trim(), constructionDate: (r.CONSTDATE || '').trim()
   })).filter(r => r.location || r.project);
 }
 

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Rootz Property Intelligence",
-    "description": "AI-powered real estate farming and property intelligence for Florida. 10.8M parcels across all 67 counties, courthouse records (litigation pending, probate, liens), FEMA flood zones, schools, demographics, building permits, and owner intelligence — all with cryptographic provenance from government sources.",
+    "description": "AI-powered real estate farming and property intelligence for Florida. 10.8M parcels across all 67 counties, courthouse records (litigation pending, probate, liens), FEMA flood zones, schools, demographics, building permits, and owner intelligence \u2014 all with cryptographic provenance from government sources.",
     "version": "0.5.0",
     "contact": {
       "name": "Rootz Corp",
@@ -20,7 +20,7 @@
     "/api/fl/search": {
       "get": {
         "operationId": "searchProperty",
-        "summary": "Full Property Intelligence Package — Single address deep-dive",
+        "summary": "Full Property Intelligence Package \u2014 Single address deep-dive",
         "description": "Full property intelligence for any FL address. Returns owner, value, farming score, court records, flood zone, schools, permits, demographics. Use /api/fl/farm for area searches.",
         "parameters": [
           {
@@ -28,14 +28,18 @@
             "in": "query",
             "required": true,
             "description": "Street address (use + for spaces). Example: 179+Harbor+Dr",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "city",
             "in": "query",
             "required": true,
             "description": "City name. Works for any FL city: Fort Lauderdale, Coral Springs, Hollywood, Miami, Orlando, Tampa, Jacksonville, etc.",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -88,19 +92,25 @@
             "name": "address",
             "in": "query",
             "description": "Street address",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "city",
             "in": "query",
             "description": "City name",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "folio",
             "in": "query",
             "description": "13-digit Miami-Dade folio number",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -121,14 +131,18 @@
             "in": "query",
             "required": true,
             "description": "Latitude",
-            "schema": { "type": "number" }
+            "schema": {
+              "type": "number"
+            }
           },
           {
             "name": "lng",
             "in": "query",
             "required": true,
             "description": "Longitude",
-            "schema": { "type": "number" }
+            "schema": {
+              "type": "number"
+            }
           }
         ],
         "responses": {
@@ -148,19 +162,25 @@
             "name": "lat",
             "in": "query",
             "required": true,
-            "schema": { "type": "number" }
+            "schema": {
+              "type": "number"
+            }
           },
           {
             "name": "lng",
             "in": "query",
             "required": true,
-            "schema": { "type": "number" }
+            "schema": {
+              "type": "number"
+            }
           },
           {
             "name": "radius",
             "in": "query",
             "description": "Search radius in miles (default 3)",
-            "schema": { "type": "number" }
+            "schema": {
+              "type": "number"
+            }
           }
         ],
         "responses": {
@@ -180,13 +200,17 @@
             "name": "folio",
             "in": "query",
             "description": "Property folio number",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "address",
             "in": "query",
             "description": "Street address to search",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -206,13 +230,17 @@
             "name": "address",
             "in": "query",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "city",
             "in": "query",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -233,7 +261,9 @@
             "in": "query",
             "required": true,
             "description": "Person or entity name to search",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -253,13 +283,17 @@
             "name": "address",
             "in": "query",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "town",
             "in": "query",
             "required": true,
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -272,39 +306,99 @@
     "/api/fl/cross-ref/entity": {
       "get": {
         "operationId": "crossRefEntity",
-        "summary": "JOIN: Property Owner → FL Business Registry (LLC Unmasking)",
+        "summary": "JOIN: Property Owner \u2192 FL Business Registry (LLC Unmasking)",
         "description": "Unmask LLC/Corp owners via FL Sunbiz. Returns officers, filing dates, succession signals. Provide owner name, address, or folio.",
         "parameters": [
-          { "name": "owner", "in": "query", "description": "Entity name to look up (e.g., SEASIDE HOLDINGS LLC)", "schema": { "type": "string" } },
-          { "name": "address", "in": "query", "description": "Property street address — will extract owner from property record", "schema": { "type": "string" } },
-          { "name": "city", "in": "query", "description": "City for address lookup", "schema": { "type": "string" } },
-          { "name": "folio", "in": "query", "description": "Miami-Dade folio number", "schema": { "type": "string" } }
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Entity name to look up (e.g., SEASIDE HOLDINGS LLC)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "address",
+            "in": "query",
+            "description": "Property street address \u2014 will extract owner from property record",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "city",
+            "in": "query",
+            "description": "City for address lookup",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "query",
+            "description": "Miami-Dade folio number",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
-          "200": { "description": "Property owner resolved to business entity with officers, filing history, and succession signals" }
+          "200": {
+            "description": "Property owner resolved to business entity with officers, filing history, and succession signals"
+          }
         }
       }
     },
     "/api/fl/cross-ref/public": {
       "get": {
         "operationId": "crossRefPublic",
-        "summary": "JOIN: Property Owner → SEC Public Companies (Institutional Detection)",
+        "summary": "JOIN: Property Owner \u2192 SEC Public Companies (Institutional Detection)",
         "description": "Cross-references a Florida property owner against SEC-registered public companies via origin.rootz.global. Identifies REITs, institutional investors, and public company subsidiaries that own Florida real estate. Provide an address, folio, or direct owner name.",
         "parameters": [
-          { "name": "owner", "in": "query", "description": "Owner name to check (e.g., INVITATION HOMES)", "schema": { "type": "string" } },
-          { "name": "address", "in": "query", "description": "Property street address", "schema": { "type": "string" } },
-          { "name": "city", "in": "query", "description": "City for address lookup", "schema": { "type": "string" } },
-          { "name": "folio", "in": "query", "description": "Miami-Dade folio number", "schema": { "type": "string" } }
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Owner name to check (e.g., INVITATION HOMES)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "address",
+            "in": "query",
+            "description": "Property street address",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "city",
+            "in": "query",
+            "description": "City for address lookup",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "query",
+            "description": "Miami-Dade folio number",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
-          "200": { "description": "Public company matches with ticker, sector, REIT detection" }
+          "200": {
+            "description": "Public company matches with ticker, sector, REIT detection"
+          }
         }
       }
     },
     "/api/fl/farm": {
       "get": {
         "operationId": "farmingSearch",
-        "summary": "Farming Prospect Search — Find motivated sellers by city and signal type",
+        "summary": "Farming Prospect Search \u2014 Find motivated sellers by city and signal type",
         "description": "Find farming prospects in any FL city. Returns scored properties with court records, owner mailing addresses, equity, and bridge page URLs. Filter by signal type to match agent specialty.",
         "parameters": [
           {
@@ -312,25 +406,33 @@
             "in": "query",
             "required": true,
             "description": "Florida city name (use + for spaces). Examples: FORT+LAUDERDALE, CORAL+SPRINGS, HOLLYWOOD, PEMBROKE+PINES, MIAMI, ORLANDO, TAMPA, JACKSONVILLE",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "signals",
             "in": "query",
             "description": "Comma-separated farming signals to filter by. Available: probate, lis_pendens (litigation pending/pre-foreclosure), lien, judgment (foreclosure), death, absentee, out_of_state, corporate, free_clear (mortgage paid off), no_homestead. Combine to match agent specialty: probate,death for estate specialists, absentee,out_of_state for investor property experts, lis_pendens,lien for distressed property agents.",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "limit",
             "in": "query",
             "description": "Maximum results to return (default 50, max 200)",
-            "schema": { "type": "integer" }
+            "schema": {
+              "type": "integer"
+            }
           },
           {
             "name": "minScore",
             "in": "query",
             "description": "Minimum farming score 0-100 (default 0). Use 40 for medium+ prospects, 70 for high-priority only.",
-            "schema": { "type": "integer" }
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -344,25 +446,31 @@
       "get": {
         "operationId": "searchOhioProperty",
         "summary": "Ohio Property Intelligence",
-        "description": "Property search for Ohio (Franklin, Hamilton, Cuyahoga counties — 1.2M parcels). Returns owner, value, sale history, and investor signals.",
+        "description": "Property search for Ohio (Franklin, Hamilton, Cuyahoga counties \u2014 1.2M parcels). Returns owner, value, sale history, and investor signals.",
         "parameters": [
           {
             "name": "address",
             "in": "query",
             "required": true,
             "description": "Street address",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "name": "city",
             "in": "query",
             "required": true,
             "description": "City name (e.g., Columbus, Cincinnati, Cleveland, Hilliard)",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
-          "200": { "description": "Ohio property intelligence package" }
+          "200": {
+            "description": "Ohio property intelligence package"
+          }
         }
       }
     },
@@ -372,13 +480,162 @@
         "summary": "FULL OWNER INTELLIGENCE: Property + Private Registry + SEC Data",
         "description": "Full owner intelligence: resolves LLCs to officers via Sunbiz + detects public companies/REITs via SEC. Provide owner name, address, or folio.",
         "parameters": [
-          { "name": "owner", "in": "query", "description": "Owner name", "schema": { "type": "string" } },
-          { "name": "address", "in": "query", "description": "Property street address", "schema": { "type": "string" } },
-          { "name": "city", "in": "query", "description": "City for address lookup", "schema": { "type": "string" } },
-          { "name": "folio", "in": "query", "description": "Miami-Dade folio number", "schema": { "type": "string" } }
+          {
+            "name": "owner",
+            "in": "query",
+            "description": "Owner name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "address",
+            "in": "query",
+            "description": "Property street address",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "city",
+            "in": "query",
+            "description": "City for address lookup",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "folio",
+            "in": "query",
+            "description": "Miami-Dade folio number",
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
-          "200": { "description": "Complete owner profile: entity type, officers, succession signals, institutional detection" }
+          "200": {
+            "description": "Complete owner profile: entity type, officers, succession signals, institutional detection"
+          }
+        }
+      }
+    },
+    "/api/nc/search": {
+      "get": {
+        "operationId": "ncPropertySearch",
+        "summary": "North Carolina property intelligence - Chatham County",
+        "description": "Full property intelligence for any NC address. Pass county for counties other than Chatham. Returns owner, mailing address, appraised value, vacant/absentee/out-of-state signals, aerial photo; Chatham adds recorded deed-of-trust (mortgage) amount.",
+        "parameters": [
+          {
+            "name": "address",
+            "in": "query",
+            "required": true,
+            "description": "Street address in Chatham County NC (use + for spaces), e.g. 1300+RIVER+FOREST+RD or 32+BRIDGEWATER+CT",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "description": "Must be NC",
+            "schema": {
+              "type": "string",
+              "default": "NC"
+            }
+          },
+          {
+            "name": "county",
+            "in": "query",
+            "description": "NC county name (all 100 counties, e.g. Wake, Mecklenburg, Durham, Guilford). Required for counties other than Chatham. Chatham has the deepest data (sales, recorded mortgages).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Property intelligence package"
+          }
+        }
+      }
+    },
+    "/api/nc/farm": {
+      "get": {
+        "operationId": "ncFarmingSearch",
+        "summary": "North Carolina motivated-seller list - Chatham County",
+        "description": "Create a motivated seller list in ANY North Carolina county (all 100 counties live via the statewide layer; Chatham is the deep-data county). Returns scored properties with owner names, mailing addresses, values, acreage, signals.",
+        "parameters": [
+          {
+            "name": "signals",
+            "in": "query",
+            "description": "Comma-separated signals: vacant, absentee, out-of-state, corporate (LLC), trust (trust/estate/heirs), ag (farm/forestry tax-deferred). Combine e.g. vacant,absentee,out-of-state for off-market land.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "town",
+            "in": "query",
+            "description": "Chatham town/community: PITTSBORO, SILER CITY, GOLDSTON, BEAR CREEK, MONCURE, BENNETT, BONLEE",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "minAcres",
+            "in": "query",
+            "description": "Minimum acreage",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "minValue",
+            "in": "query",
+            "description": "Minimum county value (dollars)",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "minScore",
+            "in": "query",
+            "description": "Minimum motivated-seller score, default 3",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max results, default 50",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "Set to csv for a downloadable spreadsheet",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "county",
+            "in": "query",
+            "description": "NC county name (all 100 counties, e.g. Wake, Mecklenburg, Durham, Guilford). Required for counties other than Chatham. Chatham has the deepest data (sales, recorded mortgages).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Motivated-seller list"
+          }
         }
       }
     }
