@@ -18,10 +18,12 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
+import { execSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.join(__dirname, 'data');
-const STATUS_FILE = path.join(DATA, 'health-status.json');
+const STATUS_FILE = process.env.HEALTH_STATUS_FILE || path.join(DATA, 'health-status.json');
 const BASE = process.env.HEALTH_BASE || 'https://title.rootz.global';
 const ALERT_EMAIL = process.env.ALERT_EMAIL || 'steven@sprague.com';
 const now = Date.now();
@@ -206,20 +208,85 @@ function checkFreshness() {
   }
 }
 
+// ── BOX EVIDENCE ──────────────────────────────────────────────────
+// An endpoint timeout has two very different causes: title is broken, or the BOX
+// is starved and everything on it is timing out. Those need opposite responses —
+// one is ours to fix, the other is an infra decision — so MEASURE the difference
+// instead of inferring it from a failure count. Same discipline as the Broward
+// WARN: separate "not our fault" from "we are broken", and say which in the alert.
+function boxEvidence() {
+  const ev = { load1: null, cores: null, loadPerCore: null, proc: null };
+  try {
+    ev.load1 = parseFloat(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);
+    ev.cores = os.cpus().length;
+    if (ev.load1 >= 0 && ev.cores > 0) ev.loadPerCore = +(ev.load1 / ev.cores).toFixed(2);
+  } catch {}
+  try {
+    const j = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] }));
+    const p = j.find(x => x.name === 'title-records');
+    if (p) ev.proc = {
+      status: p.pm2_env?.status,
+      cpu: p.monit?.cpu ?? null,
+      memMB: Math.round((p.monit?.memory || 0) / 1048576),
+      restarts: p.pm2_env?.restart_time ?? null,
+    };
+  } catch {}
+  return ev;
+}
+
+// The box is saturated AND we are its victim (not its cause) when the box is
+// heavily loaded while OUR process is online and not itself burning CPU. If we
+// ARE the one burning CPU, that is a title bug and it pages — hence the ceiling.
+// Env-tunable because the right threshold is a property of the box, not the code
+// (and because a rule you cannot exercise in a test is a rule you cannot trust).
+const SAT_LOAD_PER_CORE = +(process.env.HEALTH_SAT_LOAD_PER_CORE || 2.5);  // 2-core box => load >= 5
+const SAT_OUR_CPU_MAX = +(process.env.HEALTH_SAT_OUR_CPU_MAX || 40);
+const SAT_CHRONIC_DAYS = +(process.env.HEALTH_SAT_CHRONIC_DAYS || 3);
+function isBoxSaturated(ev) {
+  return ev.loadPerCore !== null && ev.loadPerCore >= SAT_LOAD_PER_CORE
+    && !!ev.proc && ev.proc.status === 'online'
+    && ev.proc.cpu !== null && ev.proc.cpu < SAT_OUR_CPU_MAX;
+}
+const evDesc = (ev) => ev.loadPerCore === null
+  ? 'box evidence unavailable'
+  : `load ${ev.load1} on ${ev.cores} cores = ${ev.loadPerCore}/core; title-records `
+    + (ev.proc ? `${ev.proc.status} at ${ev.proc.cpu}% CPU / ${ev.proc.memMB}MB` : 'unknown');
+
 // ── 3. ALERT (email on failure, deduped) ──────────────────────────
-async function maybeAlert(status, failed) {
+// Repeat-alert backoff. An UNCHANGED failure signature is one ongoing condition,
+// not a fresh event every 12h. Re-alerting it twice a day for 19 days is how a
+// service teaches its owner to ignore its mailbox — at which point the next REAL
+// failure lands in an inbox nobody reads. So a persistent condition backs off:
+// 12h, then 24h, then 72h, then weekly. A CHANGED signature always alerts at once.
+const REPEAT_BACKOFF_H = [12, 24, 72, 168];
+
+async function maybeAlert(status, failed, box) {
   if (process.env.HEALTH_NO_ALERT) return; // manual/test runs: don't email
   let prev = {};
   try { prev = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); } catch {}
   const sig = failed.map(f => f.name).sort().join('|');
   const lastAt = prev.alertAt ? Date.parse(prev.alertAt) : 0;
   const changed = sig !== (prev.alertSig || '');
-  const stale = (now - lastAt) > 12 * 3600 * 1000;
+  const repeats = changed ? 0 : (prev.alertRepeats || 0);
+  const waitH = REPEAT_BACKOFF_H[Math.min(repeats, REPEAT_BACKOFF_H.length - 1)];
+  const stale = (now - lastAt) > waitH * 3600 * 1000;
   // carry forward by default
   status.alertSig = prev.alertSig || '';
   status.alertAt = prev.alertAt || null;
-  if (!failed.length) { status.alertSig = ''; return; }  // recovered — clear
-  if (!(changed || stale)) return;                        // already alerted recently, same issues
+  status.alertRepeats = prev.alertRepeats || 0;
+  if (!failed.length) { status.alertSig = ''; status.alertRepeats = 0; return; }  // recovered — clear
+  if (!(changed || stale)) {
+    if (process.env.HEALTH_ALERT_DRYRUN) console.log(`  DRYRUN suppressed — unchanged signature, next reminder due in ${Math.max(0, Math.round((lastAt + waitH * 3600 * 1000 - now) / 3600000))}h (repeat #${repeats}, window ${waitH}h)`);
+    return;                                               // already alerted recently, same issues
+  }
+  // Dry run: exercise the whole alert DECISION without sending mail. An alerting
+  // rule you cannot run in a test is a rule nobody can trust.
+  if (process.env.HEALTH_ALERT_DRYRUN) {
+    console.log(`  DRYRUN would email — ${failed.length} failing, changed=${changed}, repeat #${repeats}, window ${waitH}h, sig="${sig}"`);
+    status.alertSig = sig; status.alertAt = new Date().toISOString();
+    status.alertRepeats = changed ? 0 : repeats + 1;
+    return;
+  }
   try {
     const { sendEmail } = await import('./lib/email-service.mjs');
     const rows = failed.map(f => `<li><b>${f.name}</b> — ${f.detail}</li>`).join('');
@@ -233,10 +300,15 @@ async function maybeAlert(status, failed) {
         <p style="color:#64748b;font-size:13px">Live status: <a href="${BASE}/api/health">${BASE}/api/health</a>.
         Each line above states the cause. "HARVESTER STALLED" means our cron/SFTP failed (fix our side);
         "SOURCE DARK" means the upstream county stopped publishing (chase them). A source merely lagging
-        its normal cadence shows as a non-paging WARN on the status page, not here.</p>
+        its normal cadence shows as a non-paging WARN on the status page, not here. Endpoint timeouts
+        measured while the BOX is saturated and title-records is healthy are recorded on the status
+        page as BOX SATURATED and do NOT appear here — that is an infra decision, not a title bug.</p>
+        <p style="color:#64748b;font-size:13px">Box at check time: ${box ? evDesc(box) : 'unavailable'}.<br>
+        ${changed ? 'New failure signature.' : `Unchanged signature — next reminder in ${REPEAT_BACKOFF_H[Math.min(repeats + 1, REPEAT_BACKOFF_H.length - 1)]}h (backing off).`}</p>
       </div>`,
     });
     status.alertSig = sig; status.alertAt = new Date().toISOString(); status.alertSent = true;
+    status.alertRepeats = changed ? 0 : repeats + 1;
     console.log(`  ALERT emailed to ${ALERT_EMAIL} (${failed.length} failing)`);
   } catch (e) { console.error('  alert email failed:', e.message); }
 }
@@ -257,16 +329,79 @@ if (flappy.length) {
   results = prior.map(r => (r.cat === 'endpoint' || r.cat === 'discovery') ? (retry[r.name] || r) : r);
 }
 checkFreshness();
+
+// Attribute endpoint/discovery failures to the BOX where the evidence supports it.
+// These stay visible on /api/health as failures — nothing is hidden, and the detail
+// carries the numbers — but they do not page, because "8 checks failing" is not the
+// actionable sentence. "The box is oversubscribed at 06:00" is, and that only needs
+// saying once, which is what the chronic escalation below does.
+const box = boxEvidence();
+const saturated = isBoxSaturated(box);
+let satCount = 0;
+if (saturated) {
+  for (const r of results) {
+    if ((r.cat === 'endpoint' || r.cat === 'discovery') && !r.pass) {
+      r.level = 'saturated';
+      r.detail = `${r.detail} — BOX SATURATED (${evDesc(box)}); not a title fault`;
+      satCount++;
+    }
+  }
+}
+
 const failed = results.filter(r => !r.pass);
 const warned = results.filter(r => r.level === 'warn');
-const status = { checkedAt: new Date().toISOString(), ok: failed.length === 0, passed: results.length - failed.length - warned.length, warned: warned.length, failed: failed.length, results };
-await maybeAlert(status, failed);
+const status = { checkedAt: new Date().toISOString(), ok: failed.length === 0, passed: results.length - failed.length - warned.length, warned: warned.length, failed: failed.length, box, results };
+
+// The saturation clock. This must survive RECOVERY, not just persistence: the real
+// pattern here is a brownout that recurs every morning and is gone by midday. A
+// naive "continuously true for N days" clock resets at the first clean run and
+// therefore never escalates — the condition would stay invisible precisely because
+// it keeps recovering. So the clock starts at the first sighting, counts how often
+// it recurs, and is only cleared once the box has been clean for a full quiet period.
+let prevStatus = {};
+try { prevStatus = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); } catch {}
+const satOnly = satCount > 0 && failed.length === satCount;
+const prevLastAt = prevStatus.saturatedLastAt ? Date.parse(prevStatus.saturatedLastAt) : 0;
+const goneFor = prevLastAt ? (now - prevLastAt) / 86400000 : Infinity;
+if (satOnly) {
+  status.saturatedSince = prevStatus.saturatedSince || new Date().toISOString();
+  status.saturatedLastAt = new Date().toISOString();
+  status.saturatedRuns = (prevStatus.saturatedRuns || 0) + 1;
+} else if (goneFor <= SAT_CHRONIC_DAYS) {
+  // A clean run does NOT mean it is over — carry the clock through the recovery.
+  status.saturatedSince = prevStatus.saturatedSince || null;
+  status.saturatedLastAt = prevStatus.saturatedLastAt || null;
+  status.saturatedRuns = prevStatus.saturatedRuns || 0;
+} else {
+  status.saturatedSince = null; status.saturatedLastAt = null; status.saturatedRuns = 0;
+}
+
+const pageable = failed.filter(r => r.level !== 'saturated');
+// A chronic brownout DOES deserve one page — it is an infra decision that has been
+// true for days, and the right email says that in one line rather than as N failing
+// checks. Backoff (above) then keeps it from becoming daily noise all over again.
+if (satOnly && status.saturatedSince) {
+  const satDays = (now - Date.parse(status.saturatedSince)) / 86400000;
+  if (satDays >= SAT_CHRONIC_DAYS) {
+    pageable.push({ cat: 'box', name: 'BOX SATURATED (chronic)', pass: false, level: 'fail',
+      detail: `${satCount} endpoint check(s) timed out under box load — and this has now recurred on `
+            + `${status.saturatedRuns} run(s) across ${satDays.toFixed(1)}d. ${evDesc(box)}. `
+            + `Every service on this box is affected, not just title. This is an infra decision `
+            + `(stagger the cron herd, or move title to its own box), not a title bug.` });
+  }
+}
+
+await maybeAlert(status, pageable, box);
 try { fs.writeFileSync(STATUS_FILE, JSON.stringify(status, null, 2)); } catch {}
 
 const warnNote = warned.length ? `, ${warned.length} WARN` : '';
-console.log(`\n=== Service Health — ${status.ok ? 'ALL OK' : failed.length + ' FAILING'}${warnNote} (${status.passed}/${results.length}) ===`);
+const satNote = satCount ? ` [${satCount} BOX-SATURATED, not paging]` : '';
+console.log(`\n=== Service Health — ${status.ok ? 'ALL OK' : failed.length + ' FAILING'}${warnNote}${satNote} (${status.passed}/${results.length}) ===`);
+if (box.loadPerCore !== null) console.log(`box: ${evDesc(box)}`);
 let cat = '';
-for (const r of results) { if (r.cat !== cat) { cat = r.cat; console.log(`\n[${cat}]`); } const tag = r.level === 'warn' ? 'WARN' : (r.pass ? 'PASS' : 'FAIL'); console.log(`  ${tag}  ${r.name.padEnd(34)} ${r.detail}`); }
+for (const r of results) { if (r.cat !== cat) { cat = r.cat; console.log(`\n[${cat}]`); } const tag = r.level === 'warn' ? 'WARN' : r.level === 'saturated' ? 'BOX ' : (r.pass ? 'PASS' : 'FAIL'); console.log(`  ${tag}  ${r.name.padEnd(34)} ${r.detail}`); }
 if (warned.length) console.log(`\nWARN (not paging): ${warned.map(w => w.name).join(', ')}`);
+if (satCount) console.log(`\nBOX SATURATED (not paging${satOnly ? '' : '; other real failures present'}): ${results.filter(r => r.level === 'saturated').map(r => r.name).join(', ')}`);
+if (pageable.length) console.log(`\nPAGING: ${pageable.map(f => f.name).join(', ')}`);
 if (failed.length) { console.log(`\nFAILING: ${failed.map(f => f.name).join(', ')}`); process.exit(1); }
 console.log('\nService is operational and all datasets are fresh.');
