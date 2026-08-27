@@ -13,7 +13,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, 'data', 'ohio');
+const DATA_DIR = process.env.OH_DATA_DIR || path.join(__dirname, 'data', 'ohio');
 
 // Ensure output directory
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -233,38 +233,111 @@ async function pullCounty(countyId) {
 // Hamilton), so indexing them one at a time with truncating writes lets the
 // last county silently erase the previous one's parcels. Clear once, then
 // append per county.
+// Stream one city file and copy just its OGRIP records into `outFp`.
+// Streaming, not readFileSync: a city file can exceed Node's ~512MB max string
+// (OH_CINCINNATI is 778MB, OH_CLEVELAND 608MB) and readFileSync(...,'utf8')
+// throws ERR_STRING_TOO_LONG on those. Returns how many records were kept.
+async function stashOgripLines(fp, outFp) {
+  const { createInterface } = await import('readline');
+  const rl = createInterface({ input: fs.createReadStream(fp), crlfDelay: Infinity });
+  let out = null, kept = 0;
+  for await (const line of rl) {
+    // Cheap prefilter: CAMA lines never contain this, so the big county files
+    // are skipped without paying for a JSON.parse per row.
+    if (!line.includes('ohio-ogrip')) continue;
+    try { if (JSON.parse(line)._src !== 'ohio-ogrip') continue; } catch { continue; }
+    if (!out) out = fs.createWriteStream(outFp);
+    out.write(line + '\n');
+    kept++;
+  }
+  if (out) await new Promise((res, rej) => out.end(err => (err ? rej(err) : res())));
+  return kept;
+}
+
+// Append every stashed record back into its home city file, deleting each stash
+// file as it lands so an interrupted restore resumes cleanly next run.
+// Returns the number of records restored, for verification against the stash count.
+async function restoreOgripStash(stashDir, cityDir) {
+  if (!fs.existsSync(stashDir)) return 0;
+  if (!fs.existsSync(cityDir)) fs.mkdirSync(cityDir, { recursive: true });
+  let restored = 0;
+  for (const f of fs.readdirSync(stashDir)) {
+    if (!(f.startsWith('OH_') && f.endsWith('.jsonl'))) continue;
+    const src = path.join(stashDir, f);
+    await new Promise((res, rej) => {
+      const rs = fs.createReadStream(src);
+      const ws = fs.createWriteStream(path.join(cityDir, f), { flags: 'a' });
+      rs.on('data', (c) => { let i = -1; while ((i = c.indexOf(10, i + 1)) !== -1) restored++; });
+      rs.on('error', rej); ws.on('error', rej); ws.on('finish', res);
+      rs.pipe(ws);
+    });
+    fs.unlinkSync(src);
+  }
+  return restored;
+}
+
 async function rebuildAllCityIndexes() {
   const cityDir = path.join(DATA_DIR, 'cities');
+  const stashDir = path.join(DATA_DIR, '.ogrip-stash');
   // PRESERVE OGRIP: the statewide OGRIP layer (the 83 counties without CAMA) also
   // lives in OH_ city files, but is NOT rebuilt from the CAMA county parcel files
   // below. So stash its records before the clear and restore them after — otherwise
   // this weekly refresh wipes 83 counties of coverage (it did, 2026-08-10). Records
   // are keyed by their source file so they return home. (pull-oh-ogrip.mjs writes
   // them idempotently; this only keeps them alive across a CAMA re-index.)
-  const ogripByFile = {};
-  let stashed = 0;
-  if (fs.existsSync(cityDir)) {
-    for (const f of fs.readdirSync(cityDir)) {
-      if (!(f.startsWith('OH_') && f.endsWith('.jsonl'))) continue;
-      const fp = path.join(cityDir, f);
-      const keep = [];
-      for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
-        if (!line.trim()) continue;
-        try { if (JSON.parse(line)._src === 'ohio-ogrip') keep.push(line); } catch {}
-      }
-      if (keep.length) { ogripByFile[f] = keep; stashed += keep.length; }
-      fs.unlinkSync(fp);
-    }
+  //
+  // The stash goes to DISK, and the read pass finishes BEFORE anything is deleted.
+  // Both of those are load-bearing, and both were learned from this function failing:
+  //   1. The old version read each file with readFileSync(fp,'utf8') and threw
+  //      ERR_STRING_TOO_LONG on any file over Node's ~512MB max string. It did that
+  //      every Monday from 2026-08-17, so the city index silently stopped rebuilding.
+  //   2. The old version unlinked as it read, so that throw deleted every city file
+  //      it had already walked past — and only the 5 CAMA counties get rebuilt below.
+  //      A crash partway through was one readdir ordering away from wiping the 83
+  //      OGRIP counties this very function exists to protect.
+  // Keeping the stash on disk also makes a crash *after* the clear recoverable:
+  // the next run finds it and restores before doing anything else.
+
+  // 0. RECOVER — a leftover stash means a previous run died mid-flight.
+  if (fs.existsSync(stashDir) && fs.readdirSync(stashDir).length) {
+    const n = await restoreOgripStash(stashDir, cityDir);
+    console.log(`  Recovered ${n.toLocaleString()} OGRIP records from an interrupted run`);
   }
+
+  // 1. STASH — read-only pass. Nothing is deleted until this completes.
+  const cityFiles = fs.existsSync(cityDir)
+    ? fs.readdirSync(cityDir).filter(f => f.startsWith('OH_') && f.endsWith('.jsonl'))
+    : [];
+  let stashed = 0, stashFiles = 0;
+  if (cityFiles.length) {
+    fs.mkdirSync(stashDir, { recursive: true });
+    for (const f of cityFiles) {
+      const kept = await stashOgripLines(path.join(cityDir, f), path.join(stashDir, f));
+      if (kept) { stashed += kept; stashFiles++; }
+    }
+    console.log(`  Stashed ${stashed.toLocaleString()} OGRIP records from ${stashFiles.toLocaleString()} files`);
+  }
+
+  // 2. CLEAR — safe only now that every OGRIP record is on disk in stashDir.
+  for (const f of cityFiles) fs.unlinkSync(path.join(cityDir, f));
+
+  // 3. REBUILD the CAMA counties.
   for (const [id, c] of Object.entries(COUNTIES)) {
     if (c.status === 'ready') await buildCityIndex(id, true);
   }
-  let restored = 0;
-  for (const [f, lines] of Object.entries(ogripByFile)) {
-    fs.appendFileSync(path.join(cityDir, f), lines.join('\n') + '\n');
-    restored += lines.length;
+
+  // 4. RESTORE, and verify at the write end — a silent shortfall here is exactly
+  //    the coverage loss this function is guarding against.
+  const restored = await restoreOgripStash(stashDir, cityDir);
+  if (stashed) {
+    console.log(`  Preserved ${restored.toLocaleString()} OGRIP records across ${stashFiles.toLocaleString()} files (stashed ${stashed.toLocaleString()})`);
+    if (restored !== stashed) {
+      throw new Error(`OGRIP restore mismatch: stashed ${stashed}, restored ${restored} — stash kept at ${stashDir}`);
+    }
   }
-  if (stashed) console.log(`  Preserved ${restored.toLocaleString()} OGRIP records across ${Object.keys(ogripByFile).length} files (stashed ${stashed.toLocaleString()})`);
+
+  // 5. Drop the stash only once its contents are verifiably back.
+  fs.rmSync(stashDir, { recursive: true, force: true });
 }
 
 async function buildCityIndex(countyId, append = false) {
