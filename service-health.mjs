@@ -36,8 +36,23 @@ let results = [];
 // /api/health but does NOT page — used when a source we don't control is
 // lagging while our own harvester is healthy). Defaults derive from `pass` so
 // every existing caller keeps its old behaviour.
-const add = (cat, name, pass, detail, level) =>
-  results.push({ cat, name, pass, detail, level: level || (pass ? 'ok' : 'fail') });
+// `raw` is the parsed response (or {_err} from getJSON). When the call never
+// completed, SAY SO. Previously a timeout on FL farm rendered as "0 found" and on
+// NC farm as "undefined matches", because the detail string only ever printed the
+// missing field — so a transport failure was indistinguishable from an empty
+// dataset. Nineteen days of "8 checks failing" therefore read as a data problem
+// when every one of them was a timeout. Cause belongs in the alert, not just the
+// symptom; and `transport` is what lets the box-saturation rule below fire only on
+// calls that never landed, never on a query that genuinely returned nothing.
+const add = (cat, name, pass, detail, level, raw) => {
+  const transport = !!(raw && raw._err);
+  results.push({
+    cat, name, pass,
+    detail: transport ? `TRANSPORT: ${raw._err}` : detail,
+    level: level || (pass ? 'ok' : 'fail'),
+    ...(transport ? { transport: true } : {}),
+  });
+};
 
 async function getJSON(p) {
   try { const r = await fetch(BASE + p, { signal: AbortSignal.timeout(30000) }); return await r.json(); }
@@ -47,22 +62,22 @@ async function getJSON(p) {
 // ── 1. ENDPOINTS (operational) ────────────────────────────────────
 async function checkEndpoints() {
   const wk = await getJSON('/.well-known/ai');
-  add('discovery', '.well-known/ai', wk.name === 'Rootz Property Intelligence', wk.tagline || wk._err || '');
+  add('discovery', '.well-known/ai', wk.name === 'Rootz Property Intelligence', wk.tagline || '', undefined, wk);
   const oa = await getJSON('/api/openapi.json');
-  add('discovery', 'openapi spec', Object.keys(oa.paths || {}).includes('/api/nc/farm'), `${Object.keys(oa.paths || {}).length} paths`);
+  add('discovery', 'openapi spec', Object.keys(oa.paths || {}).includes('/api/nc/farm'), `${Object.keys(oa.paths || {}).length} paths`, undefined, oa);
 
   const flf = await getJSON('/api/fl/farm?city=HOLLYWOOD&limit=3');
-  add('endpoint', 'FL farm', (flf.total || flf.count || (flf.results || []).length) > 0, `${flf.total || flf.count || (flf.results || []).length} found`);
+  add('endpoint', 'FL farm', (flf.total || flf.count || (flf.results || []).length) > 0, `${flf.total || flf.count || (flf.results || []).length} found`, undefined, flf);
   const fls = await getJSON('/api/fl/search?address=1000+BRICKELL+AVE&city=MIAMI');
-  add('endpoint', 'FL search', !!fls.property, fls.property ? '1000 BRICKELL AVE' : (fls.error || 'no property'));
+  add('endpoint', 'FL search', !!fls.property, fls.property ? '1000 BRICKELL AVE' : (fls.error || 'no property'), undefined, fls);
   const oh = await getJSON('/api/oh/search?address=100+E+BROAD+ST&city=COLUMBUS');
-  add('endpoint', 'OH search', !!(oh.property?.owner?.name1), oh.property?.parcelId || oh.error || '');
+  add('endpoint', 'OH search', !!(oh.property?.owner?.name1), oh.property?.parcelId || oh.error || '', undefined, oh);
   const nc = await getJSON('/api/nc/search?address=1300+RIVER+FOREST+RD&state=NC');
-  add('endpoint', 'NC search (Chatham)', !!(nc.property?.owner?.name1), nc.property?.owner?.name1 || nc.error || '');
+  add('endpoint', 'NC search (Chatham)', !!(nc.property?.owner?.name1), nc.property?.owner?.name1 || nc.error || '', undefined, nc);
   const ncf = await getJSON('/api/nc/farm?signals=vacant,absentee&limit=2');
-  add('endpoint', 'NC farm (Chatham)', (ncf.total || 0) > 0, `${ncf.total} matches`);
+  add('endpoint', 'NC farm (Chatham)', (ncf.total || 0) > 0, `${ncf.total} matches`, undefined, ncf);
   const ncw = await getJSON('/api/nc/farm?county=Wake&signals=absentee&limit=1');
-  add('endpoint', 'NC statewide (Wake)', (ncw.total || 0) > 0, `${ncw.total} Wake matches`);
+  add('endpoint', 'NC statewide (Wake)', (ncw.total || 0) > 0, `${ncw.total} Wake matches`, undefined, ncw);
 }
 
 // ── 2. DATA FRESHNESS (updating) ──────────────────────────────────
@@ -214,23 +229,39 @@ function checkFreshness() {
 // one is ours to fix, the other is an infra decision — so MEASURE the difference
 // instead of inferring it from a failure count. Same discipline as the Broward
 // WARN: separate "not our fault" from "we are broken", and say which in the alert.
-function boxEvidence() {
+async function boxEvidence() {
   const ev = { load1: null, cores: null, loadPerCore: null, proc: null };
   try {
     ev.load1 = parseFloat(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);
     ev.cores = os.cpus().length;
     if (ev.load1 >= 0 && ev.cores > 0) ev.loadPerCore = +(ev.load1 / ev.cores).toFixed(2);
   } catch {}
-  try {
-    const j = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] }));
-    const p = j.find(x => x.name === 'title-records');
-    if (p) ev.proc = {
-      status: p.pm2_env?.status,
-      cpu: p.monit?.cpu ?? null,
-      memMB: Math.round((p.monit?.memory || 0) / 1048576),
-      restarts: p.pm2_env?.restart_time ?? null,
-    };
-  } catch {}
+  // Sample CPU several times and take the MEDIAN. A single pm2 reading is far too
+  // noisy to decide anything: consecutive samples of this process measured
+  // 14.9, 0, 0, 0.4, 0 within ten seconds. Worse, one sample taken right after the
+  // endpoint checks partly measures the checks' OWN load — the first version of
+  // this read 56.5% and concluded "that's us", when the median was 0.
+  const cpus = [];
+  for (let i = 0; i < 5; i++) {
+    try {
+      const j = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] }));
+      const p = j.find(x => x.name === 'title-records');
+      if (!p) break;
+      if (typeof p.monit?.cpu === 'number') cpus.push(p.monit.cpu);
+      ev.proc = {
+        status: p.pm2_env?.status,
+        memMB: Math.round((p.monit?.memory || 0) / 1048576),
+        restarts: p.pm2_env?.restart_time ?? null,
+        cpu: null,
+      };
+    } catch { break }
+    if (i < 4) await new Promise(r => setTimeout(r, 1000));   // sleep, never spin — a busy-wait would add the load it is trying to measure
+  }
+  if (ev.proc && cpus.length) {
+    cpus.sort((a, b) => a - b);
+    ev.proc.cpu = cpus[Math.floor(cpus.length / 2)];
+    ev.proc.cpuSamples = cpus;
+  }
   return ev;
 }
 
@@ -335,12 +366,15 @@ checkFreshness();
 // carries the numbers — but they do not page, because "8 checks failing" is not the
 // actionable sentence. "The box is oversubscribed at 06:00" is, and that only needs
 // saying once, which is what the chronic escalation below does.
-const box = boxEvidence();
+const box = await boxEvidence();
 const saturated = isBoxSaturated(box);
 let satCount = 0;
 if (saturated) {
   for (const r of results) {
-    if ((r.cat === 'endpoint' || r.cat === 'discovery') && !r.pass) {
+    // Only calls that NEVER LANDED can be blamed on the box. A check that got a
+    // real response and disliked it (empty result, wrong owner) is a data problem
+    // and must still page, however busy the box happens to be.
+    if ((r.cat === 'endpoint' || r.cat === 'discovery') && !r.pass && r.transport) {
       r.level = 'saturated';
       r.detail = `${r.detail} — BOX SATURATED (${evDesc(box)}); not a title fault`;
       satCount++;
