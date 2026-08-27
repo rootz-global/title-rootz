@@ -126,6 +126,36 @@ Each new state = puller + query engine + `/api/<st>/search` + a golden query add
 - (GA GSCCCA recorded-instrument moat = separate, heavier track — hold for a dedicated greenlight.)
 
 ### Status log
+- 2026-08-27: **A2 REGRESSED AND IS NOW ACTUALLY FIXED (`8fc1d01`).** A2's stash/restore shipped
+  2026-08-12 and its acceptance test passed, but the weekly `--county all` cron threw
+  `ERR_STRING_TOO_LONG` at `rebuildAllCityIndexes()` on 08-17 and 08-24: it read each city file with
+  `readFileSync(fp,'utf8')`, and `OH_CINCINNATI.jsonl` (778MB) + `OH_CLEVELAND.jsonl` (608MB) are past
+  Node's ~512MB max string. County pulls succeeded; only the index rebuild died, silently, so
+  `data/ohio/cities` went unrebuilt from 08-13 and the "OH parcels city-index (weekly)" freshness
+  check was ~1h from crossing 14d when this session found it. The latent half was worse: that loop
+  `unlinkSync`'d as it read, so the throw deleted every file already walked past, and only the 5 CAMA
+  counties get rebuilt below — **92,951 of 94,625 city files carry OGRIP records**, so a crash at a
+  different readdir position would have destroyed most of the 83-county layer A2 exists to protect.
+  Fix: stream the stash (readline + substring prefilter), stash to DISK and finish the read pass
+  before deleting anything (a leftover stash makes a post-delete crash recoverable), and have restore
+  **count what it wrote back and throw on a shortfall**. `OH_DATA_DIR` override added so it is
+  testable against a fixture; tested against a 665MB file that provably kills `readFileSync`.
+  Production `--index-all` stashed **2,596,225 records from 92,951 files**, matching an independent
+  grep count taken before any code was written.
+  **Lesson: A2's acceptance ("ran --index-all, Clark still resolves") passed on the state of the data
+  that day. It did not test the size cliff, and the data grew into it.**
+- 2026-08-27: **THE 18-DAY ALARM IS REAL, AND IT IS THE BOX — same escalation as D.** Every failure
+  is `FETCH ERROR: aborted due to timeout`, never a data error. Health runs bucketed by slot over the
+  last 60 runs: **06:30 fails 87% (13/15)**, vs 12:30 20%, 18:30 33%, 00:30 7% (74/184 overall). The
+  box is **2 cores / 158 cron jobs**, with **8 heavy jobs at 06:00 UTC sharp** (cars daily-cron,
+  origin autoposter + harvest-detect, politics state-votes, private verify-manifest + sign-change,
+  our own broward `--rebuild-db`, Mondays ship manifest-puller) — and our health check runs 06:30,
+  verify-data 06:45, inside the worst 45 minutes of the box's day. This is NOT ours to fix alone and
+  NOT a check to loosen: a crawler hitting at 06:38 gets the same timeout. **The 08-13 box-capacity
+  escalation now costs a daily availability hole plus alarm fatigue, not just deferred depth.**
+- 2026-08-27: **25 commits (all of August) had never been pushed** — last push was `c134a64`,
+  2026-08-02. Now on `rootz-global`. The remote was ALSO mis-recorded: `skswave/title-rootz` redirects
+  to `rootz-global/title-rootz` (transferred 2026-07-05); only the local URL was stale. Re-pointed.
 - 2026-08-12: tracker created; loop starting at B1.
 - 2026-08-12: **CORE COMPLETE (B + A + C) via autonomous loop.** The dataset verifies its own content
   every 6h and pages only on new regressions (B); loaded coverage survives the weekly refresh and
