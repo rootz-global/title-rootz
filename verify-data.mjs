@@ -21,6 +21,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { boxEvidence, isBoxSaturated, evDesc, saturationClock, SAT_CHRONIC_DAYS, REPEAT_BACKOFF_H } from './lib/box-evidence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE || process.env.HEALTH_BASE || 'https://title.rootz.global';
@@ -58,7 +59,7 @@ async function checkCoverage(c) {
     const r = await fetch(BASE + c.url, { signal: AbortSignal.timeout(30000) });
     const d = await r.json();
     total = typeof d.total === 'number' ? d.total : null;
-  } catch (e) { return { ...c, kind: 'coverage', pass: false, detail: `FETCH ERROR: ${e.message}` }; }
+  } catch (e) { return { ...c, kind: 'coverage', pass: false, transport: true, detail: `FETCH ERROR: ${e.message}` }; }
   if (total === null) return { ...c, kind: 'coverage', pass: false, detail: 'no total in response' };
   if (SIMULATE_DROP) total = Math.floor(total * 0.1);
   const floor = Math.floor(c.baseline * (1 - DROP_PCT));
@@ -82,7 +83,9 @@ async function check(g) {
     const r = await fetch(BASE + g.url, { signal: AbortSignal.timeout(30000) });
     data = await r.json();
   } catch (e) {
-    return { ...g, pass: false, detail: `FETCH ERROR: ${e.message}` };
+    // `transport` = the call never landed. Only those can be blamed on the box; a
+    // check that got a real response and disliked it is a data problem and pages.
+    return { ...g, pass: false, transport: true, detail: `FETCH ERROR: ${e.message}` };
   }
   if (data.error && !data.property) return { ...g, pass: false, detail: `NOT FOUND: ${data.error}` };
   const f = extract(data);
@@ -121,30 +124,75 @@ if (pageable.length && !process.argv.includes('--no-retry')) {
   pageable = again.filter(r => !r.knownBroken);
 }
 
+// Attribute never-landed failures to the BOX where the evidence supports it. This
+// runs at 06:45, inside the worst 45 minutes of a 2-core box's day (16 cron jobs at
+// 06:00), so most mornings every one of these is a timeout under load rather than a
+// data regression. They still print, with the numbers — but they do not page.
+// service-health.mjs got this on 2026-08-27; this path did not, and kept paging every
+// morning for three days afterwards. Hence the shared module.
+const box = await boxEvidence();
+const boxSat = isBoxSaturated(box);
+let satCount = 0;
+if (boxSat) {
+  for (const r of pageable) {
+    if (r.transport) {
+      r.boxSaturated = true; satCount++;
+      // The retry above rebuilds pageable from fresh objects, so the matching entry
+      // in `results` is a different object — mark it too or the printout lies.
+      const shown = results.find(x => x.label === r.label);
+      if (shown) { shown.boxSaturated = true; shown.detail += ` — BOX SATURATED (${evDesc(box)}); not a title fault`; }
+    }
+  }
+  pageable = pageable.filter(r => !r.boxSaturated);
+}
+const satOnly = satCount > 0 && pageable.length === 0;
+
+// Read the clock now so a chronic brownout can raise ONE page instead of N failing
+// golden queries every morning. The clock survives the daily recovery; see lib/.
+const VSTATUS = process.env.VERIFY_STATUS_FILE || path.join(__dirname, 'data', 'verify-status.json');
+let vprev = {}; try { vprev = JSON.parse(fs.readFileSync(VSTATUS, 'utf8')); } catch {}
+const vnow = Date.now();
+const vclock = saturationClock(vprev, satOnly, vnow);
+if (satOnly && vclock.saturatedSince && (vnow - Date.parse(vclock.saturatedSince)) / 86400000 >= SAT_CHRONIC_DAYS) {
+  pageable.push({ label: 'BOX SATURATED (chronic)', pass: false,
+    detail: `${satCount} golden/coverage check(s) timed out under box load — recurring on ${vclock.saturatedRuns} run(s) across `
+          + `${((vnow - Date.parse(vclock.saturatedSince)) / 86400000).toFixed(1)}d. ${evDesc(box)}. Every service on this box is affected. Infra decision, not a data regression.` });
+}
+
 // Source-aware paging: email on a CHANGED pageable-failure set or >12h since last,
 // deduped via data/verify-status.json — mirrors service-health.mjs.
 async function maybeAlert() {
   if (!process.env.VERIFY_ALERT || process.env.VERIFY_NO_ALERT) return;
-  const STATUS = path.join(__dirname, 'data', 'verify-status.json');
-  let prev = {}; try { prev = JSON.parse(fs.readFileSync(STATUS, 'utf8')); } catch {}
-  const now = Date.now();
+  const STATUS = VSTATUS;
+  const prev = vprev;
+  const now = vnow;
   const sig = pageable.map(f => f.label).sort().join('|');
   const changed = sig !== (prev.alertSig || '');
-  const stale = (now - (prev.alertAt ? Date.parse(prev.alertAt) : 0)) > 12 * 3600 * 1000;
-  const status = { checkedAt: new Date().toISOString(), pageable: pageable.length, knownBroken: failed.length - pageable.length, alertSig: prev.alertSig || '', alertAt: prev.alertAt || null };
-  if (pageable.length && (changed || stale)) {
+  // Backoff: an UNCHANGED failure set is one ongoing condition, not a fresh event
+  // every 12h. 12h -> 24h -> 72h -> weekly; a changed set always alerts at once.
+  const repeats = changed ? 0 : (prev.alertRepeats || 0);
+  const waitH = REPEAT_BACKOFF_H[Math.min(repeats, REPEAT_BACKOFF_H.length - 1)];
+  const stale = (now - (prev.alertAt ? Date.parse(prev.alertAt) : 0)) > waitH * 3600 * 1000;
+  const status = { checkedAt: new Date().toISOString(), pageable: pageable.length, knownBroken: failed.length - pageable.length, box, alertSig: prev.alertSig || '', alertAt: prev.alertAt || null, alertRepeats: prev.alertRepeats || 0, ...vclock };
+  if (pageable.length && (changed || stale) && process.env.VERIFY_ALERT_DRYRUN) {
+    console.log(`  DRYRUN would email — ${pageable.length} pageable, changed=${changed}, repeat #${repeats}, window ${waitH}h, sig="${sig}"`);
+    status.alertSig = sig; status.alertAt = new Date().toISOString(); status.alertRepeats = changed ? 0 : repeats + 1;
+  } else if (pageable.length && !(changed || stale) && process.env.VERIFY_ALERT_DRYRUN) {
+    console.log(`  DRYRUN suppressed — unchanged set, next reminder due in ${Math.max(0, Math.round((Date.parse(prev.alertAt || 0) + waitH * 3600000 - now) / 3600000))}h (repeat #${repeats}, window ${waitH}h)`);
+  } else if (pageable.length && (changed || stale)) {
     try {
       const { sendEmail } = await import('./lib/email-service.mjs');
       const rows = pageable.map(f => `<li><b>${f.label}</b> — ${f.detail}</li>`).join('');
       await sendEmail({
         to: process.env.ALERT_EMAIL || 'steven@sprague.com',
         subject: `[Rootz Data] ${pageable.length} NEW verification failure(s) on title.rootz.global`,
-        html: `<div style="font-family:system-ui,sans-serif;max-width:560px"><h2 style="color:#b23b3b">Data verification: ${pageable.length} new failing</h2><p>A golden query or coverage check regressed (data content, not just freshness):</p><ul>${rows}</ul><p style="color:#64748b;font-size:13px">Known/acknowledged failures excluded. Run <code>node verify-data.mjs</code> for detail.</p></div>`,
+        html: `<div style="font-family:system-ui,sans-serif;max-width:560px"><h2 style="color:#b23b3b">Data verification: ${pageable.length} new failing</h2><p>A golden query or coverage check regressed (data content, not just freshness):</p><ul>${rows}</ul><p style="color:#64748b;font-size:13px">Known/acknowledged failures excluded. Timeouts measured while the BOX is saturated and title-records is healthy are recorded but do NOT appear here — infra, not a data regression. Box at check time: ${evDesc(box)}.<br>${changed ? 'New failure set.' : `Unchanged — next reminder in ${REPEAT_BACKOFF_H[Math.min(repeats + 1, REPEAT_BACKOFF_H.length - 1)]}h (backing off).`} Run <code>node verify-data.mjs</code> for detail.</p></div>`,
       });
       status.alertSig = sig; status.alertAt = new Date().toISOString();
+      status.alertRepeats = changed ? 0 : repeats + 1;
       console.log(`  ALERT emailed (${pageable.length} new failing)`);
     } catch (e) { console.error('  alert email failed:', e.message); }
-  } else if (!pageable.length) { status.alertSig = ''; }
+  } else if (!pageable.length) { status.alertSig = ''; status.alertRepeats = 0; }
   try { fs.writeFileSync(STATUS, JSON.stringify(status, null, 2)); } catch {}
 }
 await maybeAlert();
@@ -152,8 +200,10 @@ await maybeAlert();
 if (process.argv.includes('--json')) {
   console.log(JSON.stringify({ checkedAt: new Date().toISOString(), base: BASE, passed: results.length - failed.length, failed: failed.length, pageable: pageable.length, results }, null, 2));
 } else {
-  console.log(`\n=== Data Verification — ${failed.length ? failed.length + ' FAILING' : 'ALL PASS'} (${results.length - failed.length}/${results.length})${pageable.length ? ` — ${pageable.length} NEW` : ''} — ${BASE} ===\n`);
-  for (const r of results) console.log(`  ${r.pass ? 'PASS' : (r.knownBroken ? 'KNOWN' : 'FAIL')}  ${r.label.padEnd(34)} ${r.detail}${r.knownBroken ? `  [${r.knownBroken}]` : ''}`);
+  console.log(`\n=== Data Verification — ${failed.length ? failed.length + ' FAILING' : 'ALL PASS'} (${results.length - failed.length}/${results.length})${pageable.length ? ` — ${pageable.length} NEW` : ''}${satCount ? ` [${satCount} BOX-SATURATED, not paging]` : ''} — ${BASE} ===\n`);
+  console.log(`box: ${evDesc(box)}${boxSat ? '' : '  [NOT classified as saturated]'}\n`);
+  for (const r of results) console.log(`  ${r.pass ? 'PASS' : (r.boxSaturated ? 'BOX ' : (r.knownBroken ? 'KNOWN' : 'FAIL'))}  ${r.label.padEnd(34)} ${r.detail}${r.knownBroken ? `  [${r.knownBroken}]` : ''}`);
+  if (satCount) console.log(`\nBOX SATURATED (not paging): ${results.filter(r => r.boxSaturated).map(r => r.label).join(', ')}`);
   if (pageable.length) console.log(`\nNEW FAILING (pages): ${pageable.map(f => f.label).join(', ')}`);
 }
 process.exit(pageable.length ? 1 : 0);

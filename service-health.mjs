@@ -18,8 +18,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import os from 'os';
-import { execSync } from 'child_process';
+import { boxEvidence, isBoxSaturated, evDesc, saturationClock, SAT_CHRONIC_DAYS, REPEAT_BACKOFF_H } from './lib/box-evidence.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA = path.join(__dirname, 'data');
@@ -223,73 +222,13 @@ function checkFreshness() {
   }
 }
 
-// ── BOX EVIDENCE ──────────────────────────────────────────────────
-// An endpoint timeout has two very different causes: title is broken, or the BOX
-// is starved and everything on it is timing out. Those need opposite responses —
-// one is ours to fix, the other is an infra decision — so MEASURE the difference
-// instead of inferring it from a failure count. Same discipline as the Broward
-// WARN: separate "not our fault" from "we are broken", and say which in the alert.
-async function boxEvidence() {
-  const ev = { load1: null, cores: null, loadPerCore: null, proc: null };
-  try {
-    ev.load1 = parseFloat(fs.readFileSync('/proc/loadavg', 'utf8').split(' ')[0]);
-    ev.cores = os.cpus().length;
-    if (ev.load1 >= 0 && ev.cores > 0) ev.loadPerCore = +(ev.load1 / ev.cores).toFixed(2);
-  } catch {}
-  // Sample CPU several times and take the MEDIAN. A single pm2 reading is far too
-  // noisy to decide anything: consecutive samples of this process measured
-  // 14.9, 0, 0, 0.4, 0 within ten seconds. Worse, one sample taken right after the
-  // endpoint checks partly measures the checks' OWN load — the first version of
-  // this read 56.5% and concluded "that's us", when the median was 0.
-  const cpus = [];
-  for (let i = 0; i < 5; i++) {
-    try {
-      const j = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'ignore'] }));
-      const p = j.find(x => x.name === 'title-records');
-      if (!p) break;
-      if (typeof p.monit?.cpu === 'number') cpus.push(p.monit.cpu);
-      ev.proc = {
-        status: p.pm2_env?.status,
-        memMB: Math.round((p.monit?.memory || 0) / 1048576),
-        restarts: p.pm2_env?.restart_time ?? null,
-        cpu: null,
-      };
-    } catch { break }
-    if (i < 4) await new Promise(r => setTimeout(r, 1000));   // sleep, never spin — a busy-wait would add the load it is trying to measure
-  }
-  if (ev.proc && cpus.length) {
-    cpus.sort((a, b) => a - b);
-    ev.proc.cpu = cpus[Math.floor(cpus.length / 2)];
-    ev.proc.cpuSamples = cpus;
-  }
-  return ev;
-}
-
-// The box is saturated AND we are its victim (not its cause) when the box is
-// heavily loaded while OUR process is online and not itself burning CPU. If we
-// ARE the one burning CPU, that is a title bug and it pages — hence the ceiling.
-// Env-tunable because the right threshold is a property of the box, not the code
-// (and because a rule you cannot exercise in a test is a rule you cannot trust).
-const SAT_LOAD_PER_CORE = +(process.env.HEALTH_SAT_LOAD_PER_CORE || 2.5);  // 2-core box => load >= 5
-const SAT_OUR_CPU_MAX = +(process.env.HEALTH_SAT_OUR_CPU_MAX || 40);
-const SAT_CHRONIC_DAYS = +(process.env.HEALTH_SAT_CHRONIC_DAYS || 3);
-function isBoxSaturated(ev) {
-  return ev.loadPerCore !== null && ev.loadPerCore >= SAT_LOAD_PER_CORE
-    && !!ev.proc && ev.proc.status === 'online'
-    && ev.proc.cpu !== null && ev.proc.cpu < SAT_OUR_CPU_MAX;
-}
-const evDesc = (ev) => ev.loadPerCore === null
-  ? 'box evidence unavailable'
-  : `load ${ev.load1} on ${ev.cores} cores = ${ev.loadPerCore}/core; title-records `
-    + (ev.proc ? `${ev.proc.status} at ${ev.proc.cpu}% CPU / ${ev.proc.memMB}MB` : 'unknown');
-
 // ── 3. ALERT (email on failure, deduped) ──────────────────────────
 // Repeat-alert backoff. An UNCHANGED failure signature is one ongoing condition,
 // not a fresh event every 12h. Re-alerting it twice a day for 19 days is how a
 // service teaches its owner to ignore its mailbox — at which point the next REAL
 // failure lands in an inbox nobody reads. So a persistent condition backs off:
 // 12h, then 24h, then 72h, then weekly. A CHANGED signature always alerts at once.
-const REPEAT_BACKOFF_H = [12, 24, 72, 168];
+// (REPEAT_BACKOFF_H lives in lib/box-evidence.mjs — both alerting paths share it.)
 
 async function maybeAlert(status, failed, box) {
   if (process.env.HEALTH_NO_ALERT) return; // manual/test runs: don't email
@@ -395,20 +334,7 @@ const status = { checkedAt: new Date().toISOString(), ok: failed.length === 0, p
 let prevStatus = {};
 try { prevStatus = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8')); } catch {}
 const satOnly = satCount > 0 && failed.length === satCount;
-const prevLastAt = prevStatus.saturatedLastAt ? Date.parse(prevStatus.saturatedLastAt) : 0;
-const goneFor = prevLastAt ? (now - prevLastAt) / 86400000 : Infinity;
-if (satOnly) {
-  status.saturatedSince = prevStatus.saturatedSince || new Date().toISOString();
-  status.saturatedLastAt = new Date().toISOString();
-  status.saturatedRuns = (prevStatus.saturatedRuns || 0) + 1;
-} else if (goneFor <= SAT_CHRONIC_DAYS) {
-  // A clean run does NOT mean it is over — carry the clock through the recovery.
-  status.saturatedSince = prevStatus.saturatedSince || null;
-  status.saturatedLastAt = prevStatus.saturatedLastAt || null;
-  status.saturatedRuns = prevStatus.saturatedRuns || 0;
-} else {
-  status.saturatedSince = null; status.saturatedLastAt = null; status.saturatedRuns = 0;
-}
+Object.assign(status, saturationClock(prevStatus, satOnly, now));
 
 const pageable = failed.filter(r => r.level !== 'saturated');
 // A chronic brownout DOES deserve one page — it is an infra decision that has been
