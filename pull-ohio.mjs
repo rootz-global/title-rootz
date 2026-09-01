@@ -11,7 +11,6 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { archiveRaw } from './archive-raw.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.OH_DATA_DIR || path.join(__dirname, 'data', 'ohio');
@@ -215,13 +214,6 @@ async function pullCounty(countyId) {
   // county-GIS error must NOT clobber good data with an empty file.
   if (total > 0) {
     fs.renameSync(tmpFile, outFile);
-    // Keep the dated raw the county actually published BEFORE the next pull
-    // overwrites it. Derived artifacts (city index, parcels.db) stay disposable and
-    // rebuildable; this is the source of record, and counties do not publish
-    // back-issues — every overwrite before this was permanent. Guarded by total > 0
-    // for the same reason the rename is: never archive a failed pull over good data.
-    try { await archiveRaw(`oh-${countyId}`, outFile); }
-    catch (e) { console.error(`  archive failed for ${countyId} (data is fine, history is not): ${e.message}`); }
   } else {
     try { fs.unlinkSync(tmpFile); } catch {}
     console.log(`  WARNING: ${countyId} pulled 0 records (endpoint error?) — keeping previous data, NOT overwriting.`);
