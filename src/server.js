@@ -19,6 +19,7 @@ import { searchMAProperty } from './query/ma-property.js';
 import { farmingSearch } from './query/fl-farming.js';
 import { lookupClerkSignals } from './query/fl-clerk.js';
 import { buildPropertyPassport } from './query/fl-passport.js';
+import { ohCoverageSummary, ohCoverage } from './lib/coverage.js';
 import { getFloodZone, getCensusData, identifyAllLayers, getElevation, getIRSIncomeByZip, getNFIPClaimsByZip, getFEMADisastersByCounty, getStatewideEconomics, getMarketEconomics, lookupStatwideCensus, lookupCensusBlockGroup } from './query/fl-overlays.js';
 import { findNearestSchools, findBuildingPermits, findNearestHospitals, findNearestEVCharging, findNearestTRIFacilities } from './query/fl-proximity.js';
 import { assembleTimeshareIntelligence, searchDBPRTimeshare } from './query/fl-timeshare.js';
@@ -513,13 +514,30 @@ async function handleRequest(req, res) {
     }
 
     // ─── Discovery / AI ──────────────────────────────
+    // Coverage as a first-class endpoint: an AI should be able to learn what we hold,
+    // and at what depth, WITHOUT having to probe addresses and infer from misses.
+    if (path_ === '/api/coverage' && method === 'GET') {
+      logAccess(req, '/api/coverage', 200);
+      const st = (params.get('state') || 'OH').toUpperCase();
+      if (st !== 'OH') return json(res, { error: `No coverage manifest for ${st} yet`, available: ['OH'] }, 404);
+      const full = params.get('detail') === 'full';
+      const m = ohCoverage();
+      if (!m) return json(res, { error: 'coverage manifest not built yet' }, 503);
+      return json(res, full
+        ? { summary: ohCoverageSummary(), counties: m.counties, generatedAt: m.generatedAt }
+        : { summary: ohCoverageSummary(), counties: m.counties, note: 'Add ?detail=full for the per-city index.' });
+    }
+
     if (path_ === '/.well-known/ai' || path_ === '/.well-known/ai.json') {
       logAccess(req, '/.well-known/ai', 200);
       return json(res, {
         schema_version: '1.0',
         name: 'Rootz Property Intelligence',
         tagline: 'AI-native property data for 17M+ parcels.',
-        description: '10.8M Florida + 5.7M North Carolina (all 100 counties) + 2.4M Massachusetts + 1.2M Ohio parcels. Owner, assessed value, motivated-seller/farming signals, courthouse records (foreclosure, probate, liens, death), recorded deed chains + title analysis (MA), FEMA flood zones, building permits, census demographics, school proximity, market economics. All from government source data. No API key required.',
+        // Ohio's count is interpolated from the manifest, and the depth caveat is
+        // NOT optional: this line used to promise "Owner, assessed value" across the
+        // whole footprint while 83 of 88 Ohio counties carry neither.
+        description: `10.8M Florida + 5.7M North Carolina (all 100 counties) + 2.4M Massachusetts + ${(() => { const c = ohCoverageSummary(); return c && c.parcels ? `${(c.parcels / 1e6).toFixed(1)}M Ohio (${c.counties} counties)` : 'Ohio'; })()} parcels. Owner, assessed value, motivated-seller/farming signals, courthouse records (foreclosure, probate, liens, death), recorded deed chains + title analysis (MA), FEMA flood zones, building permits, census demographics, school proximity, market economics. All from government source data. No API key required. COVERAGE IS NOT UNIFORM: field depth varies by county — call /api/coverage before assuming a field exists, and read data_coverage below.`,
         operator: 'Rootz Corp',
         contact: 'discover@rootz.global',
         url: 'https://title.rootz.global',
@@ -530,6 +548,7 @@ async function handleRequest(req, res) {
           'The /farm page is for human users (AI chat interface). Use /api/* for direct data.',
           'Farming scores (0-100) are computed from courthouse signals: foreclosure, probate, liens, death, code violations.',
           'Addresses must be plain street address (no city in address field). City is a separate parameter.',
+          'Coverage is not uniform. GET /api/coverage?state=OH for which counties we hold and at what depth. A "Property not found" response carries a `coverage` object saying whether the gap is ours, an unmatched address, or a field the source does not carry at all — read it rather than recording "no data".',
         ],
 
         retrieval: {
@@ -598,7 +617,11 @@ async function handleRequest(req, res) {
           florida: { parcels: '10.8M', counties: 67, courthouse: 'Broward + Miami-Dade (foreclosure, probate, lien, death, satisfaction, deed transfer)', permits: 'Broward + Miami-Dade (466K+)', source: 'FL Department of Revenue + County Clerks' },
           north_carolina: { parcels: '5.7M', counties: 100, courthouse: 'Chatham (deeds of trust, mortgages, satisfactions via Register of Deeds)', source: 'NC OneMap statewide cadastral + county Registers of Deeds' },
           massachusetts: { parcels: '~2.4M', counties: 'all (statewide)', registry: 'recorded deed chain + title analysis (Registry of Deeds, per-property pull; e.g. Southern Essex)', source: 'MassGIS Standardized Assessors’ Parcels (live) + FEMA NFHL' },
-          ohio: { parcels: '1.2M', counties: 3, source: 'County Auditor open data' },
+          // Derived from the data at build time, never typed by hand — this line
+          // read "1.2M parcels, 3 counties" for weeks after we held 2.6M across 88,
+          // and it stated no depth, implying owner+value everywhere. See
+          // build-coverage.mjs and /api/coverage.
+          ohio: ohCoverageSummary() || { parcels: 'unknown', counties: 'unknown', source: 'County Auditor CAMA + OGRIP statewide parcel layer', note: 'coverage manifest not built yet — run build-coverage.mjs' },
           overlays: ['FEMA flood zones', 'Census ACS 2022', 'CMS Hospital Compare', 'FRED economics', 'IRS SOI income by ZIP', 'NCES schools']
         },
 

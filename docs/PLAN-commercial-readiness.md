@@ -117,7 +117,7 @@ Goal: recycles rare (root cause, not the guard). Measure RSS-under-load as accep
 
 ### Workstream D — Depth: statewide-parcel breadth (Steven greenlit 2026-08-12; gated on verify harness)
 Each new state = puller + query engine + `/api/<st>/search` + a golden query added to verify-data before it counts as done.
-- [x] **D1 DONE (data) — OH STATEWIDE.** `pull-oh-ogrip.mjs --all` loaded **2,520,546 records across 83 counties** (all 88 OH counties now covered). Stark/Louisville golden added + independently verified resolving (county Stark); Clark + Lucas pass. NOTE: a full verify-data run couldn't complete because the BOX was CPU-starved at the time (see escalation) — the data is correct; queries resolve when the box has CPU. (2026-08-13)
+- [x] **D1 DONE (data) — OH STATEWIDE. ⚠️ THE COUNTY CLAIM ON THIS LINE WAS WRONG — corrected 2026-09-15.** `pull-oh-ogrip.mjs --all` loaded 2,520,546 records; the measured manifest (`build-coverage.mjs`) says **68 OGRIP counties, not 83**, and with the 5 CAMA counties (no overlap — `DEEP_COUNTIES` excludes them) that is **73 of Ohio's 88 — 15 counties absent entirely** (Belmont, Brown, Carroll, Fairfield, Fayette, Hardin, Lorain, Madison, Morgan, Muskingum, Ottawa, Pickaway, Shelby, Tuscarawas, Wyandot). "All 88 OH counties now covered" was never true and was about to be published to an AI audience via `/.well-known/ai`. Stark/Louisville golden added + independently verified resolving (county Stark); Clark + Lucas pass. NOTE: a full verify-data run couldn't complete because the BOX was CPU-starved at the time (see escalation) — the data is correct; queries resolve when the box has CPU. (2026-08-13)
 - **⛔ WORKSTREAM D PAUSED — BOX CAPACITY ESCALATED (2026-08-13).** During/after D1 the box hit **load ~21 on 2 cores** and ALL services (FL+OH+other) timed out. Root cause is NOT title: title-records was 1.5% CPU/online; the box runs ~40 rootz node services + IPFS on **2 cores**, and a scheduled `origin.rootz.global` DB backup (38% CPU + gzip) spiked it. **Loading more states (D2–D5, each a multi-GB pull + more query load) will worsen a box that's already ~10× over capacity.** Decision for Steven: (a) bigger/dedicated box for title, (b) move heavy services off / stagger backup crons, or (c) pace depth loads carefully (one small county batch at a time, off-peak) and accept the current box. Until decided, D2–D5 are BLOCKED on infra. Also note: OH `/search` is grep-based (execSync spawns grep per query) — at statewide scale that's CPU-heavy under load; a SQLite parcels.db backend (like FL) would scale far better (a real follow-up regardless of box size).
 - [ ] **D2** MA fix: MassGIS L3 pull so MA returns owner/value (fixes the known-broken MA Georgetown golden). Gate: MA golden passes, clear its knownBroken flag.
 - [ ] **D3** TX TxGIO StratMap statewide parcels (new state): puller + `/api/tx/search` + golden. (Free bulk, 253/254 CADs.)
@@ -126,6 +126,28 @@ Each new state = puller + query engine + `/api/<st>/search` + a golden query add
 - (GA GSCCCA recorded-instrument moat = separate, heavier track — hold for a dedicated greenlight.)
 
 ### Status log
+- 2026-09-15: **COVERAGE IS NOW MEASURED AND DISCLOSED — and measuring it disproved our own claim.**
+  Andy Detwiler (PRINTgenie) asked title.rootz.global about a county in August, got "no connection to
+  that county", and had to have the foresight to ask whether the gap was ours or the county's. Fixed:
+  `build-coverage.mjs` derives a per-county manifest FROM THE DATA (never typed), `/api/coverage`
+  publishes it, `/.well-known/ai` interpolates from it, and a miss now returns a `coverage` object
+  with a **`gap`** field — ours / unmatched address / a field the source does not carry.
+  **What measuring found, all of it previously invisible:**
+  (1) **73 of 88 counties, not 88** — D1's claim corrected above. 15 counties absent.
+  (2) **CAMA records carry no county field at all** (Franklin's only county-ish key is `FLOORCOUNT`),
+      so 1.9M rows cannot be attributed from the row; counted from their source files instead.
+  (3) **Every OH miss grepped the 1.1GB raw Franklin file**, for any city, because `_RAW_` was
+      appended to every search and the loop only reaches it once all city files miss. A miss took
+      >45s and timed out; now 0.6-1.0s, gated on the manifest. Likely a real contributor to the
+      06:00 brownouts.
+  (4) The city index keys collide (`OH_SPRINGFIELD` vs `OH_CITY_OF_SPRINGFIELD`) and **city -> county
+      is many-to-many** — the SPRINGFIELD key holds Champaign AND Clark records, the LORAIN key holds
+      Erie records for a county we don't cover. The reader now mirrors the engine's own file
+      resolution and **refuses to name a county** rather than be confidently wrong.
+  (5) Per-county `as_of` is now visible, which surfaces **Cuyahoga stuck at 2026-08-10** while the
+      others refreshed 09-14 — the county GIS has been 500-ing for five weeks and the
+      directory-level freshness check cannot see it.
+  Manifest rebuilds weekly (Mon 13:00Z) after the county pull.
 - 2026-08-27: **A2 REGRESSED AND IS NOW ACTUALLY FIXED (`8fc1d01`).** A2's stash/restore shipped
   2026-08-12 and its acceptance test passed, but the weekly `--county all` cron threw
   `ERR_STRING_TOO_LONG` at `rebuildAllCityIndexes()` on 08-17 and 08-24: it read each city file with

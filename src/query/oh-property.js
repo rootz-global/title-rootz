@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { DATA_DIR as ROOT_DATA } from '../lib/config.js';
+import { explainOhMiss, ohIndexesCity, ohCityTouchesCounty } from '../lib/coverage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use the shared project data dir (symlinked on the server), NOT __dirname/data
@@ -58,7 +59,14 @@ function searchOhioByAddress(address, city) {
 
   // Also add the raw county parcel file as fallback
   const rawFile = path.join(DATA_DIR, 'franklin-parcels.jsonl');
-  if (fs.existsSync(rawFile) && !searchFiles.includes('_RAW_')) {
+  // The raw Franklin file is 1.1GB and the loop below only reaches it once every
+  // city file has missed — i.e. on exactly the miss path. Appending it to EVERY
+  // query meant a Springfield address that isn't in our index cost a full 1.1GB
+  // grep on a 2-core box, for a county Franklin has nothing to do with. The city
+  // index is built FROM this file, so it is only a sensible fallback for Franklin
+  // itself; skip it whenever the manifest can tell us the city is elsewhere.
+  const franklinPlausible = ohCityTouchesCounty(city, 'Franklin');
+  if (fs.existsSync(rawFile) && !searchFiles.includes('_RAW_') && franklinPlausible !== false) {
     searchFiles.push('_RAW_');
   }
 
@@ -260,10 +268,23 @@ export async function lookupOhioByAddress(address, city = '') {
 export async function assembleOhioPropertyIntelligence(address, city = '') {
   const timestamp = new Date().toISOString();
 
+  // Step 0: if we don't index this city at all, say so WITHOUT searching. The
+  // fallback path greps the 1.1GB raw Franklin file, so a query for a county we
+  // never loaded used to cost a full-file scan on a 2-core box and still return
+  // nothing useful. Check the cheap manifest first.
+  if (city && ohIndexesCity(city) === false) {
+    const coverage = explainOhMiss(address, city);
+    return { error: `Property not found: ${address}, ${city}, OH`, ...(coverage ? { coverage } : {}), timestamp };
+  }
+
   // Step 1: Find the property
   const properties = await lookupOhioByAddress(address, city);
   if (!properties.length) {
-    return { error: `Property not found: ${address}, ${city}, OH`, timestamp };
+    // Never return a bare "not found". It conflates three different facts — we don't
+    // cover the county, we cover it but missed this address, or the SOURCE has no such
+    // field — and a caller (especially an AI) cannot act on the difference. Say which.
+    const coverage = explainOhMiss(address, city);
+    return { error: `Property not found: ${address}, ${city}, OH`, ...(coverage ? { coverage } : {}), timestamp };
   }
   const prop = properties[0];
   const lat = prop.lat;
@@ -372,6 +393,18 @@ export async function assembleOhioPropertyIntelligence(address, city = '') {
       state: 'OH',
       zip: prop.TRUE_SITE_ZIP_CODE,
       parcelId: prop.FOLIO,
+      // Per-record provenance and DEPTH, on the hit as well as the miss. The record
+      // already knew it was parcel-only; the assembled response dropped it, so a
+      // caller saw owner:"" with nothing to say whether the owner is unknown or
+      // simply absent from this source. Those are not the same fact.
+      county: prop._county || null,
+      source: prop._source || null,
+      depth: prop._depth || 'full',
+      ...(prop._depth === 'parcel-only' ? {
+        depthNote: prop._note || 'Statewide parcel layer: owner name and assessed value are NOT carried by this source at any price.',
+        lacks: ['owner_name', 'assessed_value', 'sale_history'],
+        camaLink: prop._camaLink || null,
+      } : {}),
       coordinates: lat && lng ? { lat, lng } : null,
       owner: { name1: prop.TRUE_OWNER1, name2: prop.TRUE_OWNER2 },
       ownerOccupied: prop.OWNER_OCCUPIED,
