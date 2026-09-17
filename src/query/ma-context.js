@@ -153,3 +153,121 @@ export async function maHistoricNearby(lat, lng, meters = 500) {
     caveat: 'This layer carries MHC AREA records; individual building inventory points are absent for some towns (Beverly included). An absence here is NOT evidence the building is uninventoried — check MACRIS (mhc-macris.net) directly.',
   };
 }
+
+const BUILDINGS = 'https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/Building_Structures/FeatureServer/0/query';
+const WETLANDS = 'https://services1.arcgis.com/hGdibHYSPO59RG1h/arcgis/rest/services/DEP_Wetlands/FeatureServer/0/query';
+const NFHL = 'https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query';
+
+const postJSON = async (url, params, timeout = 25000) => {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(url, {
+      method: 'POST', signal: ctl.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(params).toString(),
+    });
+    return await r.json();
+  } catch { return null; } finally { clearTimeout(t); }
+};
+
+// Building footprints on the parcel (MassGIS Building_Structures, roofprint-derived).
+export async function buildingFootprints(ring) {
+  const d = await postJSON(BUILDINGS, {
+    geometry: JSON.stringify({ rings: [ring], spatialReference: { wkid: 4326 } }),
+    geometryType: 'esriGeometryPolygon', inSR: '4326', spatialRel: 'esriSpatialRelIntersects',
+    outFields: 'STRUCT_ID,AREA_SQ_FT,SOURCEDATE,SOURCETYPE', returnGeometry: 'true', outSR: '4326', f: 'json',
+  });
+  return (d?.features || []).map(f => ({ ...f.attributes, ring: f.geometry?.rings?.[0] }));
+}
+
+// FLOOD AT THE FOOTPRINT, not a geocoded point. The point method is what lenders'
+// automated determinations use and it produced a false positive on 358 Main St,
+// Groveland: the street point landed in a thin AE sliver at the front of the lot while
+// both structures were entirely in Zone X. "Mandatory flood insurance" vs not is real
+// money, so this reports the zones touching the BUILDINGS and the zones touching the
+// PARCEL separately, and says which method answered.
+export async function floodAtFootprint(ring, footprints) {
+  const ask = async (r) => {
+    const d = await postJSON(NFHL, {
+      geometry: JSON.stringify({ rings: [r], spatialReference: { wkid: 4326 } }),
+      geometryType: 'esriGeometryPolygon', inSR: '4326', spatialRel: 'esriSpatialRelIntersects',
+      outFields: 'FLD_ZONE,ZONE_SUBTY,SFHA_TF,STATIC_BFE', returnGeometry: 'false', f: 'json',
+    });
+    if (!d || d.error) return null;
+    return (d.features || []).map(f => f.attributes);
+  };
+  const parcelZones = await ask(ring);
+  const structureZones = [];
+  for (const fp of (footprints || [])) {
+    if (!fp.ring) continue;
+    const z = await ask(fp.ring);
+    if (z) structureZones.push({ structId: fp.STRUCT_ID, areaSqFt: Math.round(fp.AREA_SQ_FT || 0), zones: z });
+  }
+  const uniq = a => [...new Set((a || []).map(z => z.FLD_ZONE).filter(Boolean))];
+  if (parcelZones === null && !structureZones.length) {
+    return { method: 'unavailable', note: 'FEMA NFHL did not respond. No footprint determination was made — do NOT read this as "no flood risk".' };
+  }
+  const structZoneList = uniq(structureZones.flatMap(s => s.zones));
+  return {
+    method: 'footprint',
+    parcelZones: uniq(parcelZones),
+    structureZones: structZoneList,
+    structures: structureZones,
+    structuresInSFHA: structureZones.some(s => s.zones.some(z => z.SFHA_TF === 'T')),
+    note: structZoneList.length || parcelZones?.length
+      ? 'Zones touching the parcel and the buildings are reported separately. A parcel can touch an SFHA while every structure sits outside it — that distinction is the difference between mandatory flood insurance and not.'
+      : 'Neither the parcel nor the buildings intersect a mapped NFHL polygon.',
+  };
+}
+
+// MA Wetlands Protection Act: work within 100 ft of a bordering vegetated wetland needs
+// a Conservation Commission filing. Report the buffer as a measured distance ring from
+// the PARCEL boundary, not from a point — the constraint runs to where you dig.
+export async function wetlandsNearby(ring) {
+  const rings = [0, 15, 30, 46, 61];       // metres; 30m ~= the 100 ft WPA buffer
+  const out = [];
+  for (const m of rings) {
+    const d = await postJSON(WETLANDS, {
+      geometry: JSON.stringify({ rings: [ring], spatialReference: { wkid: 4326 } }),
+      geometryType: 'esriGeometryPolygon', inSR: '4326',
+      ...(m ? { distance: String(m), units: 'esriSRUnit_Meter' } : {}),
+      spatialRel: 'esriSpatialRelIntersects', outFields: 'ARC_CODE_DESC', returnGeometry: 'false', f: 'json',
+    });
+    if (!d || d.error) return { available: false, note: 'MassDEP wetlands layer did not respond.' };
+    const fs = d.features || [];
+    out.push({ bufferMeters: m, bufferFeet: Math.round(m * 3.28084), arcs: fs.length, types: [...new Set(fs.map(f => f.attributes.ARC_CODE_DESC))] });
+    if (fs.length) break;
+  }
+  const first = out.find(o => o.arcs > 0);
+  const within100ft = out.find(o => o.bufferMeters === 30)?.arcs > 0 || out.find(o => o.bufferMeters < 30 && o.arcs > 0);
+  return {
+    available: true,
+    nearestMappedWetlandWithinFeet: first ? first.bufferFeet : `> ${out[out.length - 1].bufferFeet}`,
+    withinWpa100ftBuffer: !!within100ft,
+    rings: out,
+    note: within100ft
+      ? 'Mapped wetland resource area lies within ~100 ft of the parcel. Work in the buffer zone requires a filing with the Conservation Commission (RDA or Notice of Intent) under the Wetlands Protection Act.'
+      : 'No mapped wetland resource area within ~100 ft of the parcel boundary, so the WPA buffer is unlikely to apply. MassDEP mapping is APPROXIMATE — a delineation by a wetland scientist governs, and small or unmapped resources exist.',
+  };
+}
+
+// The registry pointer. We cannot scrape MassLandRecords reliably (viewstate app, no
+// API), but the book/page in the assessor record IS the lookup key and we were dropping
+// it. Give the exact reference and the door. The Essex North/South split is a known trap
+// — a wrong district means "no record found" on a perfectly good deed.
+export function registryPointer(town, book, page) {
+  const t = String(town || '').toUpperCase();
+  const ESSEX_SOUTH = new Set(['BEVERLY', 'SALEM', 'DANVERS', 'PEABODY', 'MARBLEHEAD', 'SWAMPSCOTT', 'LYNN', 'SAUGUS', 'NAHANT', 'MIDDLETON', 'TOPSFIELD', 'WENHAM', 'HAMILTON', 'MANCHESTER', 'ESSEX', 'GLOUCESTER', 'ROCKPORT', 'IPSWICH', 'LYNNFIELD']);
+  const district = ESSEX_SOUTH.has(t) ? 'Essex South (Salem)' : null;
+  return {
+    book: book || null, page: page || null,
+    district,
+    districtBasis: district
+      ? 'Town is in the Essex South district.'
+      : 'District NOT determined for this town. Massachusetts splits several counties (Essex North/South, Middlesex North/South, Worcester/Worcester North, Bristol Fall River/New Bedford/Taunton, Berkshire North/Middle/South). Searching the wrong district returns "no record found" for a perfectly good deed — confirm before concluding anything.',
+    url: 'https://www.masslandrecords.com/',
+    coverage: 'MassLandRecords indexes run 1951-present; document images go back to 1640 for Essex South. A pre-1951 chain needs the book/page, which the index will not find by name.',
+    note: 'No public API exists. This is a pointer, not a retrieval — the chain of title still requires opening the record.',
+  };
+}

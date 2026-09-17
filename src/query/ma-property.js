@@ -19,7 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { fetchJSON } from '../lib/fetch.js';
 import { MASSGIS_URL } from '../lib/constants.js';
-import { parcelGeometry, lotConformance, maHistoricNearby } from './ma-context.js';
+import { parcelGeometry, lotConformance, maHistoricNearby, buildingFootprints, floodAtFootprint, wetlandsNearby, registryPointer } from './ma-context.js';
 import { DATA_DIR } from '../lib/config.js';
 
 // Load a pre-crawled Registry-of-Deeds title file (data/properties/*.json) for this
@@ -117,6 +117,11 @@ export async function searchMAProperty(address, town) {
     (geo.lat ? maHistoricNearby(geo.lat, geo.lng).catch(() => null) : Promise.resolve(null)),
   ]);
   const conformance = geom ? lotConformance({ assessorAcres: num(a.LOT_SIZE), mappedSqFt: geom.areaSqFt, zoning: a.ZONING }) : null;
+  const footprints = geom ? await buildingFootprints(geom.ring).catch(() => []) : [];
+  const [floodFp, wetlands] = geom ? await Promise.all([
+    floodAtFootprint(geom.ring, footprints).catch(() => null),
+    wetlandsNearby(geom.ring).catch(() => null),
+  ]) : [null, null];
 
   const ls = a.LS_DATE ? String(a.LS_DATE) : '';
   const lastSale = ls.length === 8
@@ -153,6 +158,10 @@ export async function searchMAProperty(address, town) {
       registryNote: (a.LS_BOOK && a.LS_PAGE) ? `Recorded at Book ${a.LS_BOOK}, Page ${a.LS_PAGE}. Look up at masslandrecords.com (Essex South for Beverly/Salem-area towns).` : null,
       nominalConsideration: num(a.LS_PRICE) <= 1 ? 'Price of $1 or less — a nominal/non-arm\'s-length transfer (trust, estate, family or refinance). NOT a market price; do not use as a comp.' : null } : null,
     lotConformance: conformance,
+    buildings: footprints.map(f => ({ structId: f.STRUCT_ID, footprintSqFt: Math.round(f.AREA_SQ_FT || 0), sourceDate: f.SOURCEDATE, sourceType: f.SOURCETYPE })),
+    floodAtFootprint: floodFp,
+    wetlands,
+    registry: registryPointer(a.CITY || town, a.LS_BOOK, a.LS_PAGE),
     historic,
     flood: { ...flood, determinationBasis: 'POINT — a single geocoded street point, not the building footprint or parcel polygon. This is the same method that produces lender false positives; for a flood-adjacent parcel verify against the footprint before relying on it.' },
     location: geo.lat ? { lat: geo.lat, lng: geo.lng } : null,
