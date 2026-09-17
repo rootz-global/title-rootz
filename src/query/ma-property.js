@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { fetchJSON } from '../lib/fetch.js';
 import { MASSGIS_URL } from '../lib/constants.js';
+import { parcelGeometry, lotConformance, maHistoricNearby } from './ma-context.js';
 import { DATA_DIR } from '../lib/config.js';
 
 // Load a pre-crawled Registry-of-Deeds title file (data/properties/*.json) for this
@@ -109,6 +110,13 @@ export async function searchMAProperty(address, town) {
 
   const geo = await geocode(a.SITE_ADDR || address, town);
   const flood = await floodZone(geo.lat, geo.lng);
+  // Context the single-parcel shape used to drop on the floor. All three were done by
+  // hand during the 135 Hart St run; all three are one call each.
+  const [geom, historic] = await Promise.all([
+    parcelGeometry(a.LOC_ID).catch(() => null),
+    (geo.lat ? maHistoricNearby(geo.lat, geo.lng).catch(() => null) : Promise.resolve(null)),
+  ]);
+  const conformance = geom ? lotConformance({ assessorAcres: num(a.LOT_SIZE), mappedSqFt: geom.areaSqFt, zoning: a.ZONING }) : null;
 
   const ls = a.LS_DATE ? String(a.LS_DATE) : '';
   const lastSale = ls.length === 8
@@ -139,8 +147,14 @@ export async function searchMAProperty(address, town) {
       livingAreaSqFt: num(a.RES_AREA) || null, buildingAreaSqFt: num(a.BLD_AREA) || null,
       lotSize: num(a.LOT_SIZE) || null, lotUnits: a.LOT_UNITS || null, zoning: a.ZONING || null,
     },
-    lastSale,
-    flood,
+    // book/page is the pointer INTO the registry — we had it in the assessor record
+    // all along and were dropping it, which is why deedHistory could only say "no".
+    lastSale: lastSale ? { ...lastSale, book: a.LS_BOOK || null, page: a.LS_PAGE || null,
+      registryNote: (a.LS_BOOK && a.LS_PAGE) ? `Recorded at Book ${a.LS_BOOK}, Page ${a.LS_PAGE}. Look up at masslandrecords.com (Essex South for Beverly/Salem-area towns).` : null,
+      nominalConsideration: num(a.LS_PRICE) <= 1 ? 'Price of $1 or less — a nominal/non-arm\'s-length transfer (trust, estate, family or refinance). NOT a market price; do not use as a comp.' : null } : null,
+    lotConformance: conformance,
+    historic,
+    flood: { ...flood, determinationBasis: 'POINT — a single geocoded street point, not the building footprint or parcel polygon. This is the same method that produces lender false positives; for a flood-adjacent parcel verify against the footprint before relying on it.' },
     location: geo.lat ? { lat: geo.lat, lng: geo.lng } : null,
     ids: { mapParId: a.MAP_PAR_ID, locId: a.LOC_ID },
     sources: [

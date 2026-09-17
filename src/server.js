@@ -16,6 +16,7 @@ import crypto from 'crypto';
 // ─── Component imports ─────────────────────────────────────────
 import { assemblePropertyIntelligence, lookupByAddress, lookupByFolio, getInvestorSignals } from './query/fl-property.js';
 import { searchMAProperty } from './query/ma-property.js';
+import { maStreet, maAssemblage, maOwnerPortfolio, maHistoricNearby } from './query/ma-context.js';
 import { farmingSearch } from './query/fl-farming.js';
 import { lookupClerkSignals } from './query/fl-clerk.js';
 import { buildPropertyPassport } from './query/fl-passport.js';
@@ -397,6 +398,40 @@ async function handleRequest(req, res) {
       const city = params.get('city') || '';
       if (!address) return json(res, { error: 'address required' }, 400);
       return json(res, await assembleOhioPropertyIntelligence(address, city));
+    }
+
+    // ─── MA context: the questions a per-parcel lookup structurally cannot answer ───
+    // Street, assemblage and owner-portfolio. Each is one MassGIS query; each was done
+    // by hand on 135 Hart St, Beverly before these existed.
+    if (path_ === '/api/ma/street' && method === 'GET') {
+      logAccess(req, '/api/ma/street', 200);
+      const town = params.get('town') || params.get('city');
+      const street = params.get('street');
+      if (!town || !street) return json(res, { error: 'town= and street= required (e.g. town=Beverly&street=HART ST)' }, 400);
+      return json(res, await maStreet(town, street));
+    }
+
+    // Who else took parcels in the SAME transaction — assemblage detection.
+    if (path_ === '/api/ma/assemblage' && method === 'GET') {
+      logAccess(req, '/api/ma/assemblage', 200);
+      const town = params.get('town') || params.get('city');
+      if (!town) return json(res, { error: 'town= required, plus book= (and optional page=) or lsDate=YYYYMMDD' }, 400);
+      return json(res, await maAssemblage(town, { book: params.get('book'), page: params.get('page'), lsDate: params.get('lsDate') }));
+    }
+
+    if (path_ === '/api/ma/owner' && method === 'GET') {
+      logAccess(req, '/api/ma/owner', 200);
+      const town = params.get('town') || params.get('city');
+      const owner = params.get('owner');
+      if (!town || !owner) return json(res, { error: 'town= and owner= required' }, 400);
+      return json(res, await maOwnerPortfolio(town, owner));
+    }
+
+    if (path_ === '/api/ma/historic' && method === 'GET') {
+      logAccess(req, '/api/ma/historic', 200);
+      const lat = parseFloat(params.get('lat')), lng = parseFloat(params.get('lng'));
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return json(res, { error: 'lat= and lng= required' }, 400);
+      return json(res, await maHistoricNearby(lat, lng, parseInt(params.get('meters') || '500', 10)));
     }
 
     // ─── NC Property API (Chatham County) ────────────
